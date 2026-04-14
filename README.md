@@ -11,6 +11,10 @@ Claude Code is stateless. Every session starts from zero. You explain the same c
 
 RAWThink gives your AI a memory that persists, decays naturally, and revises itself when you change your mind. It's a 15-tool MCP server that turns Claude Code into a long-term thinking partner.
 
+## Article
+
+Read the full story: [Your AI Doesn't Remember You]([https://dev.to/yigitaunal](https://dev.to/yigitaunal/your-ai-doesnt-remember-you-thats-about-to-matter-more-than-you-think-77k))
+
 ## Quick Start
 
 ### Prerequisites
@@ -277,9 +281,7 @@ Canonical types (non-standard accepted with warning):
 - MCP-native session tools (no Claude Code dependency)
 - Configurable language normalization
 
-## Article
 
-Read the full story: [Your AI Doesn't Remember You](https://dev.to/yigitaunal) *(coming soon)*
 
 ## License
 
