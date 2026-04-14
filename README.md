@@ -13,7 +13,7 @@ RAWThink gives your AI a memory that persists, decays naturally, and revises its
 
 ## Article
 
-Read the full story: [Your AI Doesn't Remember You] ([https://dev.to/yigitaunal](https://dev.to/yigitaunal/your-ai-doesnt-remember-you-thats-about-to-matter-more-than-you-think-77k))
+Read the full story: [Your AI Doesn't Remember You](https://dev.to/yigitaunal/your-ai-doesnt-remember-you-thats-about-to-matter-more-than-you-think-77k)
 
 ## Quick Start
 
