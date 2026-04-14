@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rawthink-mcp"
+version = "0.1.0"
+description = "Persistent memory MCP server for AI development workflows — hybrid search, knowledge graph, session lifecycle."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Yiğit Alp Ünal", email = "unal.yigitalp@gmail.com" },
+]
+keywords = ["mcp", "knowledge-graph", "semantic-search", "ai-memory", "claude"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "qdrant-client>=1.12.0",
+    "fastmcp>=2.0.0",
+    "ollama>=0.4.0",
+    "httpx>=0.27.0",
+    "markdown>=3.5.0",
+]
+
+[project.scripts]
+rawthink-mcp = "rawthink_mcp.server:main"
+rawthink-export = "rawthink_mcp.session_export:main"
+rawthink-install = "rawthink_mcp.install:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["rawthink_mcp"]
+
+[project.urls]
+Homepage = "https://github.com/ygtalp/rawthink-mcp"
+Repository = "https://github.com/ygtalp/rawthink-mcp"
+Issues = "https://github.com/ygtalp/rawthink-mcp/issues"

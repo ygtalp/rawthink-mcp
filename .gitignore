@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+.bm25_state.json
+qdrant_data/
+vault/memory.jsonl
+vault/handoff-*.md
+.env
+dist/
+*.egg-info/
+tests/bench_data/
+tests/benchmark_results.json
+tests/search_quality_baseline.json
+tests/search_quality_after_fix.json
+*.zip
+
+# Vault content (personal data) — ignore contents but keep dirs
+vault/sessions/*
+!vault/sessions/.gitkeep
+vault/qnotes/*
+!vault/qnotes/.gitkeep
+vault/archive/raw/*
+!vault/archive/raw/.gitkeep
+vault/outputs/*
+!vault/outputs/.gitkeep
