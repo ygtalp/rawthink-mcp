@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rawthink-mcp"
-version = "0.1.1"
+version = "0.1.2"
 description = "Persistent memory MCP server for AI development workflows — hybrid search, knowledge graph, session lifecycle."
 readme = "README.md"
 license = "MIT"
