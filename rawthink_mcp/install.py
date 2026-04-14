@@ -134,17 +134,26 @@ def _install_hook(vault_path: Path) -> None:
     hook_command = f"node {hook_script} {vault_str}"
 
     # Check if already registered (idempotent)
+    # Claude Code format: SessionStart is array of {matcher?, hooks: [{type, command}]}
     existing = settings["hooks"]["SessionStart"]
     already = any(
-        isinstance(h, dict)
-        and "rawthink-handoff" in h.get("command", "")
-        for h in existing
+        isinstance(entry, dict)
+        and any(
+            "rawthink-handoff" in h.get("command", "")
+            for h in entry.get("hooks", [])
+            if isinstance(h, dict)
+        )
+        for entry in existing
     )
 
     if not already:
         existing.append({
-            "type": "command",
-            "command": hook_command,
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": hook_command,
+                }
+            ],
         })
 
     settings_path.write_text(
