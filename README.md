@@ -28,16 +28,15 @@ Read the full story: [Your AI Doesn't Remember You](https://dev.to/yigitaunal/yo
 
 ```bash
 pip install rawthink-mcp
-rawthink-install              # creates vault, configures MCP, installs hook
-docker run -d --name rawthink-qdrant -p 6333:6333 -v rawthink_qdrant:/qdrant/storage qdrant/qdrant
+rawthink-install              # creates project dir with vault, configs, and starter files
+cd ~/rawthink-vault           # go to your project directory
+docker compose up -d          # start Qdrant (docker-compose.yml is here)
 ollama pull bge-m3            # download embedding model
 ```
 
-> If you cloned the repo, you can use `docker compose up -d` instead.
-
 Restart Claude Code. Done.
 
-`rawthink-install` handles everything: vault directory, `~/.claude.json` MCP config, SessionStart hook, and starter files (CLAUDE.md, THINKING_DIRECTIVES.md). Run `rawthink-install --vault ~/my-vault` to customize the vault location.
+`rawthink-install` creates a self-contained project directory at `~/rawthink-vault` with vault structure, CLAUDE.md, THINKING_DIRECTIVES.md, SETUP.md, docker-compose.yml, and /rtclose command. Run `rawthink-install --vault ~/my-vault` to customize the location.
 
 <details>
 <summary>Manual setup (without rawthink-install)</summary>

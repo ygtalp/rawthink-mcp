@@ -1,7 +1,8 @@
 """rawthink install — one-command setup for RAWThink MCP server.
 
-Creates vault, configures MCP in Claude Code, installs SessionStart hook,
-and copies starter files. Idempotent — safe to run multiple times.
+Creates a self-contained project directory with vault, configures MCP in
+Claude Code, installs SessionStart hook, and copies starter files.
+Idempotent — safe to run multiple times. Upgrade-safe — updates paths on re-run.
 """
 from __future__ import annotations
 
@@ -58,24 +59,24 @@ def _check_prereqs() -> dict[str, bool]:
     return checks
 
 
-def _create_vault(vault_path: Path) -> None:
-    """Create vault directory structure."""
+def _create_vault(project_dir: Path) -> None:
+    """Create vault directory structure inside project dir."""
+    vault = project_dir / "vault"
     dirs = [
-        vault_path / "sessions",
-        vault_path / "qnotes",
-        vault_path / "archive" / "raw",
-        vault_path / "outputs",
+        vault / "sessions",
+        vault / "qnotes",
+        vault / "archive" / "raw",
+        vault / "outputs",
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
 
-    # Create empty memory.jsonl if it doesn't exist
-    memory_file = vault_path / "memory.jsonl"
+    memory_file = vault / "memory.jsonl"
     if not memory_file.exists():
         memory_file.touch()
 
 
-def _configure_mcp(vault_path: Path) -> None:
+def _configure_mcp(project_dir: Path) -> None:
     """Add rawthink server to ~/.claude.json MCP config."""
     claude_json = Path.home() / ".claude.json"
 
@@ -89,8 +90,8 @@ def _configure_mcp(vault_path: Path) -> None:
     if "mcpServers" not in config:
         config["mcpServers"] = {}
 
-    # Use forward slashes in vault path for JSON (cross-platform)
-    vault_str = str(vault_path).replace("\\", "/")
+    # RAWTHINK_VAULT points to vault subdirectory, not project root
+    vault_str = str(project_dir / "vault").replace("\\", "/")
 
     config["mcpServers"]["rawthink"] = {
         "command": "rawthink-mcp",
@@ -105,18 +106,16 @@ def _configure_mcp(vault_path: Path) -> None:
     )
 
 
-def _install_hook(vault_path: Path) -> None:
+def _install_hook(project_dir: Path) -> None:
     """Copy handoff hook and register it in Claude Code settings."""
-    hooks_dir = Path.home() / ".claude" / "hooks"
+    hooks_dir = Path.home() / ".claude" / "hooks"  # GLOBAL ~/.claude/
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy rawthink-handoff.js from package
     src = Path(__file__).parent / "rawthink-handoff.js"
     dst = hooks_dir / "rawthink-handoff.js"
     shutil.copy2(src, dst)
 
-    # Register in settings.json
-    settings_path = Path.home() / ".claude" / "settings.json"
+    settings_path = Path.home() / ".claude" / "settings.json"  # GLOBAL ~/.claude/
     settings = {}
     if settings_path.exists():
         try:
@@ -129,32 +128,33 @@ def _install_hook(vault_path: Path) -> None:
     if "SessionStart" not in settings["hooks"]:
         settings["hooks"]["SessionStart"] = []
 
-    vault_str = str(vault_path).replace("\\", "/")
+    vault_str = str(project_dir / "vault").replace("\\", "/")  # vault subdirectory
     hook_script = str(dst).replace("\\", "/")
     hook_command = f"node {hook_script} {vault_str}"
 
-    # Check if already registered (idempotent)
-    # Claude Code format: SessionStart is array of {matcher?, hooks: [{type, command}]}
+    # Remove existing rawthink hook entries (path may have changed on upgrade)
     existing = settings["hooks"]["SessionStart"]
-    already = any(
-        isinstance(entry, dict)
-        and any(
-            "rawthink-handoff" in h.get("command", "")
-            for h in entry.get("hooks", [])
-            if isinstance(h, dict)
+    settings["hooks"]["SessionStart"] = [
+        entry for entry in existing
+        if not (
+            isinstance(entry, dict)
+            and any(
+                "rawthink-handoff" in h.get("command", "")
+                for h in entry.get("hooks", [])
+                if isinstance(h, dict)
+            )
         )
-        for entry in existing
-    )
+    ]
 
-    if not already:
-        existing.append({
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": hook_command,
-                }
-            ],
-        })
+    # Always add with current path
+    settings["hooks"]["SessionStart"].append({
+        "hooks": [
+            {
+                "type": "command",
+                "command": hook_command,
+            }
+        ],
+    })
 
     settings_path.write_text(
         json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
@@ -162,35 +162,35 @@ def _install_hook(vault_path: Path) -> None:
     )
 
 
-def _copy_starter_files() -> None:
-    """Copy CLAUDE.md and THINKING_DIRECTIVES.md to CWD if they don't exist."""
-    cwd = Path.cwd()
-    package_dir = Path(__file__).parent.parent  # repo root when dev, won't exist when installed
-
-    for filename in ("CLAUDE.md", "THINKING_DIRECTIVES.md"):
-        target = cwd / filename
+def _copy_starter_files(project_dir: Path) -> None:
+    """Copy all starter files to project directory."""
+    # Root-level files
+    for filename, template in [
+        ("CLAUDE.md", _CLAUDE_MD_TEMPLATE),
+        ("THINKING_DIRECTIVES.md", _THINKING_DIRECTIVES_TEMPLATE),
+        ("SETUP.md", _SETUP_MD_TEMPLATE),
+        ("docker-compose.yml", _DOCKER_COMPOSE_TEMPLATE),
+    ]:
+        target = project_dir / filename
         if target.exists():
             print(f"  {filename} already exists — skipping")
             continue
+        target.write_text(template, encoding="utf-8")
+        print(f"  Created {filename}")
 
-        # Try repo root first (development install)
-        source = package_dir / filename
-        if source.exists():
-            shutil.copy2(source, target)
-            print(f"  Copied {filename}")
-            continue
-
-        # Fallback: generate minimal starter content
-        if filename == "CLAUDE.md":
-            target.write_text(_CLAUDE_MD_TEMPLATE, encoding="utf-8")
-            print(f"  Created {filename}")
-        elif filename == "THINKING_DIRECTIVES.md":
-            target.write_text(_THINKING_DIRECTIVES_TEMPLATE, encoding="utf-8")
-            print(f"  Created {filename}")
+    # .claude/commands/rtclose.md  (PROJECT-level .claude/, not global ~/.claude/)
+    commands_dir = project_dir / ".claude" / "commands"
+    commands_dir.mkdir(parents=True, exist_ok=True)
+    rtclose_target = commands_dir / "rtclose.md"
+    if rtclose_target.exists():
+        print("  .claude/commands/rtclose.md already exists — skipping")
+    else:
+        rtclose_target.write_text(_RTCLOSE_MD_TEMPLATE, encoding="utf-8")
+        print("  Created .claude/commands/rtclose.md")
 
 
 # ---------------------------------------------------------------------------
-# Embedded templates (used when package files aren't available)
+# Embedded templates
 # ---------------------------------------------------------------------------
 
 _CLAUDE_MD_TEMPLATE = """\
@@ -208,10 +208,12 @@ give pushback when something seems wrong, don't parrot.
 
 Philosopher peer. Push back politely but clearly on wrong assertions.
 You're not an authority — you're a thinking partner.
+"State awareness" — the user may sometimes be in a galaxy-brain state;
+don't judge, but stay honest.
 
 ## Thinking Directives
 
-Read and apply `THINKING_DIRECTIVES.md` at session start.
+Read and apply `THINKING_DIRECTIVES.md` at session start. This is the working discipline of the thinking partnership — every rule was born from a violation. Don't follow mechanically; remember why each rule exists.
 
 ## Epistemic Transparency (end of each response)
 
@@ -231,24 +233,35 @@ GAPS: [open questions / missing info]
 - **Technical**: Use math and physics
 - **Galaxy-brain**: Creative, wide imagination — no limits
 
+## Meta-Commands
+
+`/tag`, `/branch`, `/speculative`, `/grounded`, `/proactive`,
+`/promote`, `/qnote`, `/status`, `/summary`, `/rtclose`
+
 ## MCP-First Rule
 
 **Always use rawthink MCP tools to access vault and session data.**
 `get_session`, `search_thoughts`, `get_related`, `open_nodes`, `search_nodes` —
-these exist for this purpose. Never parse raw JSONL files or read transcripts manually.
+these exist for this purpose. Never parse raw JSONL files, write ad-hoc scripts,
+or read transcripts manually. Use your own infrastructure, don't work around it.
 
 ## Persist Memory — Layered Access
 
 ### Session Start
 1. Auto memory (MEMORY.md) loads automatically — hot cache
-2. When a topic comes up, use `rawthink` MCP to find related content
+2. When a topic comes up, use `rawthink` MCP to find related content:
+   - `search_nodes` to find entities in the knowledge graph
+   - `open_nodes` for entity details
 3. For deep context, use `search_thoughts` for semantic vault search
-4. Scan previous session's qnotes for unresolved action items
+4. **Scan previous session's qnotes:** Use `search_thoughts(source_type="qnote")` to check qnotes since the last session date. Look for unresolved action items or decisions needing follow-up — these may not have made it into the handoff.
 
 ### During Session
 - On new thoughts, use `search_thoughts` to find related past thoughts
-- On confirmed decisions/rules, use knowledge graph tools to persist
-- When storing qnotes with `store_thought`, ALWAYS pass `session_id`
+- On confirmed decisions/rules, use knowledge graph tools to persist:
+  - `create_entities` for new concepts/rules
+  - `create_relations` for connections
+  - `add_observations` to add info to existing entities
+- **When storing qnotes with `store_thought`, ALWAYS pass `session_id`** — use the most recent session ID from handoff or context. This links qnotes to their source conversation for traceability.
 
 ### Session End
 - Key insights → knowledge graph entities + observations
@@ -321,6 +334,393 @@ This document is incomplete by design. New failure modes will emerge.
 Add rules born from your own failures. The directives evolve.
 """
 
+_SETUP_MD_TEMPLATE = """\
+# RAWThink Setup Guide
+
+> This file is read by Claude Code after `pip install rawthink-mcp`.
+> Claude follows these steps to set up the infrastructure for the user.
+> The user should NOT need to read this — Claude does.
+
+---
+
+## Prerequisites Check
+
+Before starting, verify:
+
+```bash
+# Docker installed and running?
+docker --version
+docker info > /dev/null 2>&1
+
+# Ollama installed?
+ollama --version
+
+# Node.js installed? (for SessionStart hook)
+node --version
+
+# Python 3.10+?
+python --version
+```
+
+If any prerequisite is missing, tell the user what to install and where to get it:
+- Docker: https://docs.docker.com/get-docker/
+- Ollama: https://ollama.com/download
+- Node.js: https://nodejs.org/
+- Python 3.10+: https://www.python.org/downloads/ or `uv python install 3.13`
+
+**Do not proceed until prerequisites are confirmed.**
+
+---
+
+## Step 1: Start Qdrant
+
+Qdrant is the vector database for semantic search. It runs as a Docker container.
+
+```bash
+# If the user cloned the repo (docker-compose.yml exists):
+docker compose up -d
+
+# If installed via pip (no docker-compose.yml):
+docker run -d --name rawthink-qdrant \\
+  -p 6333:6333 \\
+  -v rawthink_qdrant_data:/qdrant/storage \\
+  --restart unless-stopped \\
+  qdrant/qdrant:latest
+```
+
+**Verify:** `curl -s http://localhost:6333/healthz` should return OK or `{"title":"qdrant..."}`.
+
+If port 6333 is taken, use a different port and tell the user to set `QDRANT_URL=http://localhost:<port>` in their MCP config env.
+
+---
+
+## Step 2: Pull Embedding Model
+
+BGE-M3 is the multilingual embedding model used for semantic search (1024-dim dense vectors).
+
+```bash
+ollama pull bge-m3
+```
+
+This downloads ~1.2GB. Wait for completion.
+
+**Verify:** `ollama list` should show `bge-m3`.
+
+If Ollama is running but pull fails, check: `ollama serve` might need to be started first.
+
+---
+
+## Step 3: Initialize Vault
+
+The vault is where sessions, qnotes, and knowledge graph data live.
+
+```bash
+# Choose a location for the vault
+VAULT_DIR="$HOME/rawthink-vault"  # or wherever the user wants
+
+mkdir -p "$VAULT_DIR"/{sessions,qnotes,archive/raw,outputs}
+touch "$VAULT_DIR/memory.jsonl"
+```
+
+Ask the user where they want their vault. Suggest `~/rawthink-vault` as default.
+
+---
+
+## Step 4: Configure MCP
+
+Add to the user's `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "rawthink": {
+      "command": "rawthink-mcp",
+      "env": {
+        "RAWTHINK_VAULT": "<VAULT_DIR from step 3>",
+        "MEMORY_FILE_PATH": "<VAULT_DIR>/memory.jsonl"
+      }
+    }
+  }
+}
+```
+
+**Windows note:** Use forward slashes in paths (`C:/Users/name/rawthink-vault`).
+
+---
+
+## Step 5: Copy Starter Files
+
+Copy CLAUDE.md and THINKING_DIRECTIVES.md to the user's project:
+
+```bash
+# If cloned from repo, these already exist
+# If installed via pip, download from GitHub:
+curl -sL https://raw.githubusercontent.com/ygtalp/rawthink-mcp/main/CLAUDE.md -o CLAUDE.md
+curl -sL https://raw.githubusercontent.com/ygtalp/rawthink-mcp/main/THINKING_DIRECTIVES.md -o THINKING_DIRECTIVES.md
+```
+
+Tell the user to customize CLAUDE.md — role, tone, modes, language preferences.
+
+---
+
+## Step 6: Session Handoff Hook
+
+The handoff hook ensures session context carries over between conversations. It runs automatically at each session start, reading the previous session's handoff and listing recent qnotes.
+
+**1. Copy the hook script:**
+
+```bash
+mkdir -p ~/.claude/hooks
+
+# If cloned from repo:
+cp rawthink_mcp/rawthink-handoff.js ~/.claude/hooks/
+
+# If installed via pip, download from GitHub:
+curl -sL https://raw.githubusercontent.com/ygtalp/rawthink-mcp/main/rawthink_mcp/rawthink-handoff.js -o ~/.claude/hooks/rawthink-handoff.js
+```
+
+**2. Add to `~/.claude/settings.json`:**
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ~/.claude/hooks/rawthink-handoff.js <VAULT_DIR from step 3>"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Replace `<VAULT_DIR from step 3>` with the actual vault path (e.g. `~/rawthink-vault`).
+
+**Windows note:** Use the full path: `node C:/Users/<name>/.claude/hooks/rawthink-handoff.js C:/Users/<name>/rawthink-vault`
+
+**What this does:**
+- Reads `vault/handoff-*.md` files and injects them into Claude's context
+- Lists recent qnotes (last 7 days) so Claude can scan for unresolved action items
+- Runs automatically — no manual steps needed after setup
+
+**Verify:** Start a new Claude Code session. You should see "RAWThink Session Handoff" in the startup output (after running `/rtclose` at least once).
+
+---
+
+## Step 7: Verify
+
+Restart Claude Code, then test:
+
+1. Ask Claude to run `search_thoughts` with any query — should return "No results found." (empty vault is OK)
+2. Ask Claude to run `store_thought` with a test thought — should create a qnote
+3. Ask Claude to run `search_thoughts` again — should find the test thought
+4. Ask Claude to run `read_graph` — should return empty graph
+
+If any step fails:
+- **Qdrant connection error** → check Docker is running, port 6333 accessible
+- **Ollama embedding error** → check `ollama list` shows bge-m3, `ollama serve` is running
+- **Vault not found** → check RAWTHINK_VAULT env var path exists
+
+---
+
+## Step 8: First Session
+
+The vault is empty. Start using it:
+
+1. Have a conversation with Claude about any topic
+2. At the end, Claude can use `store_thought` to save key insights
+3. Use `create_entities` to build the knowledge graph
+4. Next session, `search_thoughts` will find previous context
+
+Over time, the three memory layers fill:
+- **MEMORY.md** — manually curated hot cache
+- **Knowledge Graph** (memory.jsonl) — entities, relations, observations
+- **Semantic Search** (Qdrant) — full-text across all sessions and qnotes
+
+---
+
+## Troubleshooting
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `spawn rawthink-mcp ENOENT` | rawthink-mcp not in PATH | Use absolute path, or check `pip show rawthink-mcp` for install location |
+| `Ollama unavailable` | ollama not running | `ollama serve` in a terminal |
+| `Qdrant connection refused` | Docker not running or wrong port | `docker ps` to check, `docker compose up -d` |
+| `No results` after indexing | BM25 state stale | Run `reindex` with `full=true` |
+| Turkish chars not matching | Normalization off | Set env `RAWTHINK_TURKISH_NORMALIZATION=1` in MCP config |
+"""
+
+_DOCKER_COMPOSE_TEMPLATE = """\
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+    restart: unless-stopped
+"""
+
+_RTCLOSE_MD_TEMPLATE = """\
+# /rtclose — Session Close
+
+This command closes the current session and performs:
+1. JSONL export (Python pipeline)
+2. Entity extraction (knowledge graph feeding)
+3. Handoff + MEMORY.md update
+4. Report
+
+## Argument
+
+Optional title: `/rtclose "Session Title"`
+If not provided, generate a title from the session's main topic.
+
+---
+
+## Step 0: Project Detection
+
+Detect the project name from CWD and create a project tag:
+
+```bash
+# Get CWD
+PROJECT_DIR=$(basename "$(pwd)")
+PROJECT_TAG="project/$(echo "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]')"
+```
+
+**JSONL path is CWD-specific:** Each project's JSONLs are under different encoded paths.
+- Encode the CWD path: replace `/` with `-`, remove `:` — look under `~/.claude/projects/`
+
+**Export always goes to the vault:** `vault/` relative to the project root.
+
+## Step 1: JSONL Export (Python pipeline)
+
+Find the session JSONL file and export:
+
+```bash
+# Detect project directory
+PROJECT_DIR=$(basename "$(pwd)")
+PROJECT_TAG="project/$(echo "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]')"
+
+# Find JSONL path based on CWD
+# Create encoded CWD: /home/user/projects/myproject -> home-user-projects-myproject
+CWD_ENCODED=$(pwd | sed 's|^/||' | sed 's|/|-|g')
+JSONL_PATH=$(ls -t ~/.claude/projects/${CWD_ENCODED}/*.jsonl 2>/dev/null | head -1)
+
+# If not found, search manually
+if [ -z "$JSONL_PATH" ]; then
+  echo "WARNING: JSONL not found, searching ~/.claude/projects/ ..."
+  JSONL_PATH=$(find ~/.claude/projects/ -name "*.jsonl" -newer /tmp/session_start 2>/dev/null | head -1)
+fi
+
+# Export — to vault relative to project root
+PYTHONUTF8=1 rawthink-export "$JSONL_PATH" \\
+  --title "[TITLE]" \\
+  --slug "[SLUG]" \\
+  --tags "$PROJECT_TAG,[OTHER_TAGS]" \\
+  --vault-dir vault \\
+  --reindex
+```
+
+- If the user provided a title via `/rtclose "Session Title"`, use it for `[TITLE]`
+- Otherwise generate a title from the session's main topic (2-5 words)
+- `[SLUG]` = slugify the title (lowercase, hyphen-separated)
+- `[OTHER_TAGS]` = extract from session content (comma-separated) — `$PROJECT_TAG` is added automatically
+- `--reindex` flag updates Qdrant. If Ollama is down or errors, retry without `--reindex`.
+- Parse the output as JSON — save `session_id` and `files` fields.
+
+## Step 2: Entity Extraction (Knowledge Graph)
+
+Read the generated clean dialog MD and feed the knowledge graph:
+
+1. Use `read_graph()` MCP tool to get the current graph
+2. For new concepts, rules, insights in the session:
+   - `create_entities()` to add new entities
+   - `create_relations()` to create connections
+   - `add_observations()` to add new info to existing entities
+3. Note the counts of added entities/relations
+
+**Entity extraction criteria:**
+- Repeated or emphasized concepts in the session -> entity
+- Formulated rules or decisions -> entity (type: rule/decision)
+- Personal insights -> entity (type: insight)
+- Analogies and connections -> relation
+- Entity names in kebab-case
+- **Use project prefix for project-specific entities:** `myproject-performance-fix` vs `general-concept`
+
+**If already exists:** Use `add_observations()` to add new info. Don't create duplicates.
+
+## Step 3: Handoff + MEMORY.md
+
+### Write vault/handoff-{PROJECT_NAME}-{SESSION_ID}.md:
+
+**Multi-terminal safe:** Each session writes its own handoff file — parallel terminals never overwrite each other.
+
+`PROJECT_NAME` = Step 0's `PROJECT_DIR` lowercase
+`SESSION_ID` = from Step 1 export output
+
+**IMPORTANT:** Claude Code's Write tool requires reading the file first with Read.
+
+**Steps:**
+1. Write directly — no archive step needed (each session has its own file)
+2. Write new content with Write tool to `vault/handoff-${PROJECT_NAME}-${SESSION_ID}.md`
+
+```yaml
+---
+session: "[SESSION_ID]"
+date: [DATE]
+project: "[PROJECT_TAG]"
+---
+## Summary
+[2-3 sentences]
+
+## Open Questions
+- [list]
+
+## Next Steps
+- [list]
+
+## Key Insight
+- [most important takeaway]
+```
+
+### Update MEMORY.md:
+File: `~/.claude/projects/<encoded-cwd>/memory/MEMORY.md`
+
+- New concepts/positions -> add as graph entities (DON'T add to MEMORY.md)
+- New technical decisions -> add as graph entity, only 1-line summary in MEMORY.md
+- New open questions -> add as `open-question-*` entity in graph
+- Update changed info (project status, etc.)
+- **Stay under 80 lines** — details go to graph, MEMORY.md is essential context + pointers only
+
+## Step 4: Report
+
+When complete, report in this format:
+
+```
+Session closed: [SESSION_ID]
+Project: [PROJECT_TAG]
+
+Files:
+- Clean dialog: vault/sessions/[...]
+- Full transcript: vault/archive/raw/[...]
+- HTML: vault/outputs/[...]
+- PDF: [if available or "skipped"]
+
+Knowledge Graph:
+- [N] new entities added
+- [N] new relations added
+- [N] observations updated
+
+Reindex: [N] chunks indexed (or "skipped")
+Handoff: vault/handoff-[PROJECT_NAME]-[SESSION_ID].md written
+MEMORY.md: [change summary]
+```
+"""
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -330,10 +730,10 @@ def main():
         "--vault",
         type=str,
         default=str(Path.home() / "rawthink-vault"),
-        help="Path to vault directory (default: ~/rawthink-vault)",
+        help="Path to project directory (default: ~/rawthink-vault)",
     )
     args = parser.parse_args()
-    vault_path = Path(args.vault).resolve()
+    project_dir = Path(args.vault).resolve()
 
     print("RAWThink Install\n")
 
@@ -369,43 +769,46 @@ def main():
     else:
         print()
 
-    # Step 2: Create vault
-    print(f"Creating vault: {vault_path}")
-    _create_vault(vault_path)
-    print(f"  Vault ready: {vault_path}")
+    # Step 2: Create project structure
+    print(f"Creating project: {project_dir}")
+    _create_vault(project_dir)
+    print(f"  Project ready: {project_dir}")
 
     # Step 3: Configure MCP
     print("\nConfiguring MCP in ~/.claude.json...")
-    _configure_mcp(vault_path)
+    _configure_mcp(project_dir)
     print("  MCP configured")
 
     # Step 4: Install hook
     print("\nInstalling SessionStart hook...")
-    _install_hook(vault_path)
+    _install_hook(project_dir)
     print("  Hook installed")
 
-    # Step 5: Copy starter files
-    print("\nCopying starter files to current directory...")
-    _copy_starter_files()
+    # Step 5: Copy starter files to project dir
+    print("\nCopying starter files to project directory...")
+    _copy_starter_files(project_dir)
 
     # Step 6: Summary
-    vault_str = str(vault_path).replace("\\", "/")
+    project_str = str(project_dir).replace("\\", "/")
     print(f"""
 Setup complete.
 
-  Vault:     {vault_str}
+  Project:   {project_str}
+  Vault:     {project_str}/vault
   MCP:       ~/.claude.json updated
   Hook:      ~/.claude/hooks/rawthink-handoff.js
-  Templates: CLAUDE.md, THINKING_DIRECTIVES.md
 
-Your vault is empty — that's the point. Start a conversation
-in Claude Code, use store_thought to save your first insight,
-and run /rtclose when you're done. Your memory grows from here.
+Your vault is empty — that's the point.
+
+  cd {project_str}
+  claude
+
+Start a conversation, use /qnote to save insights,
+run /rtclose when you're done. Your memory grows from here.
 
 Next steps:
-  docker compose up -d    # start Qdrant
+  docker compose up -d    # start Qdrant (docker-compose.yml is in your project dir)
   ollama pull bge-m3      # download embedding model
-  # restart Claude Code
 """)
 
 

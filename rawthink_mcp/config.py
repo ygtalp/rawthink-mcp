@@ -23,7 +23,7 @@ EMBED_INSTRUCTION = ""  # BGE-M3 does not require instruction prefix
 # Knowledge graph
 MEMORY_FILE = os.environ.get(
     "MEMORY_FILE_PATH",
-    os.path.join(os.path.dirname(__file__), "..", "vault", "memory.jsonl"),
+    os.path.join(VAULT_PATH, "memory.jsonl"),
 )
 
 # Turkish character normalization — opt-in for Turkish users
