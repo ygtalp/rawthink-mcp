@@ -49,7 +49,7 @@ if [ -z "$JSONL_PATH" ]; then
 fi
 
 # Export — to vault relative to project root
-PYTHONUTF8=1 python persist/session_export.py "$JSONL_PATH" \
+PYTHONUTF8=1 rawthink-export "$JSONL_PATH" \
   --title "[TITLE]" \
   --slug "[SLUG]" \
   --tags "$PROJECT_TAG,[OTHER_TAGS]" \
