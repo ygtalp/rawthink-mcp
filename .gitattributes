@@ -1,0 +1,15 @@
+# Repo stores LF; working copies may check out CRLF on Windows.
+# Without this, every file shows as modified on a Windows checkout and real
+# changes hide among the noise.
+* text=auto eol=lf
+
+*.md   text eol=lf
+*.py   text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.toml text eol=lf
+*.js   text eol=lf
+
+*.png binary
+*.jpg binary
+*.pdf binary
