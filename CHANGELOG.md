@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] — 2026-07-31
+
+No functional change. Two release-plumbing defects, both found by publishing
+2.0.0 for real rather than by reading the specification.
+
+### Fixed
+
+- **The MCP registry ownership marker was missing.** The registry proves that a
+  publisher controls a PyPI package by finding `mcp-name: <server-name>` in the
+  package README. 2.0.0 shipped without it, and PyPI versions cannot be
+  re-uploaded — so the fix costs a version. The publish workflow now checks for
+  the marker *before* it waits on the release, not after.
+- **The publish workflow assumed a tag ref.** `workflow_dispatch` runs on a
+  branch, so `GITHUB_REF_NAME` was `main` and every manual run died comparing a
+  branch name against a version number. Tag and manual paths are now handled
+  separately, and both still verify that `server.json`, its package entry and
+  `pyproject.toml` agree.
+
+Both were verified against the published schema and a parsed workflow file
+before 2.0.0 went out. Neither check exercised the path that failed.
+
 ## [2.0.0] — 2026-07-31
 
 > **Breaking twice over.** The graph schema changed in 1.5.0 and the sparse

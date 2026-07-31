@@ -20,18 +20,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Version must match the tag
-        # server.json carries the version twice and pyproject a third time.
-        # A registry entry pointing at a version that was never published is
+      - name: Versions agree
+        # Two trigger paths, two meanings for GITHUB_REF_NAME. A tag push gives
+        # "v2.0.0"; workflow_dispatch runs on a branch and gives "main". The
+        # first version of this step assumed a tag, so every manual run died
+        # here comparing "main" against a version number.
+        #
+        # server.json carries the version twice and pyproject a third time. A
+        # registry entry pointing at a version that was never published is
         # worse than no entry: it resolves, installs nothing, and looks like
         # the package is broken.
         run: |
-          tag="${GITHUB_REF_NAME#v}"
-          sj=$(python -c "import json;d=json.load(open('server.json'));print(d['version'])")
-          sp=$(python -c "import json;d=json.load(open('server.json'));print(d['packages'][0]['version'])")
+          sj=$(python -c "import json;print(json.load(open('server.json'))['version'])")
+          sp=$(python -c "import json;print(json.load(open('server.json'))['packages'][0]['version'])")
           pp=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          echo "tag=$tag server.json=$sj package=$sp pyproject=$pp"
-          test "$tag" = "$sj" -a "$tag" = "$sp" -a "$tag" = "$pp"
+          echo "server.json=$sj package=$sp pyproject=$pp"
+          test "$sj" = "$sp" -a "$sj" = "$pp" || {
+            echo "the three declared versions disagree"; exit 1; }
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+            echo "tag=$tag"
+            test "$tag" = "$sj" || {
+              echo "tag $tag does not match server.json $sj"; exit 1; }
+          else
+            echo "manual run — publishing whatever version the checkout declares ($sj)"
+          fi
+          echo "VERSION=$sj" >> "$GITHUB_ENV"
 
       - name: README carries the ownership marker
         # The registry proves package ownership by finding `mcp-name: <name>`
@@ -46,7 +61,7 @@ jobs:
 
       - name: Wait for the version to appear on PyPI
         run: |
-          v="${GITHUB_REF_NAME#v}"
+          v="$VERSION"
           for i in $(seq 1 30); do
             if curl -fsS "https://pypi.org/pypi/rawthink-mcp/$v/json" >/dev/null; then
               echo "rawthink-mcp $v is on PyPI"; exit 0

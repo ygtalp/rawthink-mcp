@@ -380,8 +380,6 @@ If you change the schema, change `config.py`, the migration in `migrate.py`, and
 the session-close instructions together. They are three views of one contract,
 and they drift apart quietly when they are not edited as a set.
 
-# 
-
 `docs/postmortem-bm25-term-drift.md` is the clearest example — a defect that
 looked fine from every angle until someone evaluated the two retrievers
 separately.
