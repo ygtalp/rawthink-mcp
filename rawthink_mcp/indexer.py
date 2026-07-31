@@ -31,7 +31,17 @@ from qdrant_client.models import (
     Fusion,
 )
 
+import logging
+
 from . import config
+
+# MCP speaks JSON-RPC over stdout. Anything printed there corrupts the channel,
+# and the corruption is silent from this side — the client just sees malformed
+# frames. Diagnostics go to a logger, which server.main() points at stderr.
+log = logging.getLogger(__name__)
+
+# A function taking texts and returning one vector per text.
+EmbedFn = "Callable[[list[str]], list[list[float]]]"
 from .chunker import MarkdownChunker, ThoughtChunk
 from .sparse import BM25Tokenizer
 
@@ -43,14 +53,27 @@ class EmbeddingError(RuntimeError):
 class Indexer:
     """Embeds vault content and indexes into Qdrant for hybrid search."""
 
-    def __init__(self, qdrant_url: str | None = None, qdrant_path: str | None = None) -> None:
+    def __init__(self, qdrant_url: str | None = None, qdrant_path: str | None = None,
+                 embedder: "EmbedFn | None" = None,
+                 bm25_state_path: str | None = None) -> None:
+        # `embedder` is the seam that makes this class testable without Ollama.
+        # It takes a list of texts and returns a list of vectors; production
+        # leaves it None and the Ollama path below is used. Tests pass a
+        # deterministic stub, which exercises every code path around embedding
+        # — batching, caching, dedup, pagination — without a model server.
+        self._embedder = embedder
         self._qdrant_url = qdrant_url or config.QDRANT_URL
         self._qdrant_path = qdrant_path or config.QDRANT_PATH
         self._client: QdrantClient | None = None
         self._chunker = MarkdownChunker()
         self._bm25 = BM25Tokenizer()
         self._collection = config.COLLECTION_NAME
-        self._bm25_path = os.path.join(os.path.dirname(__file__), ".bm25_state.json")
+        # Path is a constructor argument and no directory is created here:
+        # constructing an Indexer in a test must not touch the real vault.
+        # mkdir happens in initialize().
+        self._bm25_path = bm25_state_path or config.BM25_STATE_FILE
+        self._legacy_bm25_path = os.path.join(
+            os.path.dirname(__file__), ".bm25_state.json")
         # Embedding cache for Ollama fallback (hash -> vector)
         self._embedding_cache: dict[str, list[float]] = {}
         self._cache_keys: list[str] = []  # insertion order for LRU eviction
@@ -66,8 +89,36 @@ class Indexer:
         else:
             self._client = QdrantClient(url=self._qdrant_url)
 
+        os.makedirs(os.path.dirname(self._bm25_path) or ".", exist_ok=True)
+
+        # A state file left in the package directory by an older version. It is
+        # shared by every vault on the machine, which is the bug; remove it so
+        # nothing loads it by accident.
+        if (os.path.exists(self._legacy_bm25_path)
+                and os.path.abspath(self._legacy_bm25_path)
+                != os.path.abspath(self._bm25_path)):
+            log.warning("Removing package-directory BM25 state at %s; state now "
+                        "lives with the vault.", self._legacy_bm25_path)
+            try:
+                os.remove(self._legacy_bm25_path)
+            except OSError:
+                pass
+
         if os.path.exists(self._bm25_path):
-            self._bm25.load(self._bm25_path)
+            try:
+                self._bm25.load(self._bm25_path)
+            except ValueError as exc:
+                # A state file from the positional-ID era. Keeping it would
+                # silently reproduce the defect, so it goes — loudly.
+                log.warning(
+                    "Discarding incompatible BM25 state at %s: %s "
+                    "A full reindex is required for sparse retrieval to work.",
+                    self._bm25_path, exc,
+                )
+                try:
+                    os.remove(self._bm25_path)
+                except OSError:
+                    pass
 
         collections = [c.name for c in self._client.get_collections().collections]
         if self._collection not in collections:
@@ -85,16 +136,26 @@ class Indexer:
                 hnsw_config=HnswConfigDiff(m=16, ef_construct=128),
             )
 
-            for field_name in ("session_id", "source_type", "tags", "date"):
+
+
+    # ------------------------------------------------------------------
+    # Embedding
+    # ------------------------------------------------------------------
+
+
+        # Payload indexes, OUTSIDE the create-collection branch. Inside it, an
+        # existing collection never gained a newly added index — session_ref
+        # would be unindexed on every vault created before this line existed.
+        for field_name in ("session_id", "source_type", "tags", "date", "session_ref"):
+            try:
                 self._client.create_payload_index(
                     collection_name=self._collection,
                     field_name=field_name,
                     field_schema=PayloadSchemaType.KEYWORD,
                 )
-
-    # ------------------------------------------------------------------
-    # Embedding
-    # ------------------------------------------------------------------
+            except Exception:
+                # Already present, or unsupported in local mode.
+                pass
 
     def _cache_put(self, key: str, vec: list[float]) -> None:
         """Store embedding in LRU cache, evicting oldest if full."""
@@ -109,6 +170,10 @@ class Indexer:
     def _embed(self, text: str) -> list[float]:
         """Embed a single text via Ollama with cache."""
         cache_key = hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
+        if self._embedder is not None:
+            vec = self._embedder([text])[0][: config.VECTOR_DIM]
+            self._cache_put(cache_key, vec)
+            return vec
         try:
             resp = ollama.embed(
                 model=config.OLLAMA_MODEL,
@@ -117,7 +182,10 @@ class Indexer:
             vec = resp.embeddings[0][: config.VECTOR_DIM]
             self._cache_put(cache_key, vec)
             return vec
-        except (httpx.ConnectError, ollama.ResponseError):
+        except (httpx.HTTPError, ollama.ResponseError, ConnectionError, OSError):
+            # Timeouts are HTTPError, not ConnectError, and used to escape
+            # entirely — the caller saw a raw httpx exception instead of the
+            # cache fallback.
             # Try cache
             if cache_key in self._embedding_cache:
                 return self._embedding_cache[cache_key]
@@ -128,15 +196,31 @@ class Indexer:
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts via Ollama with caching."""
         prefixed = [config.EMBED_INSTRUCTION + t for t in texts]
+        if self._embedder is not None:
+            vecs = [v[: config.VECTOR_DIM] for v in self._embedder(prefixed)]
+            if len(vecs) != len(texts):
+                raise EmbeddingError(
+                    f"embedder returned {len(vecs)} vectors for {len(texts)} texts"
+                )
+            for text, vec in zip(texts, vecs):
+                self._cache_put(
+                    hashlib.sha256(text.encode("utf-8")).hexdigest()[:32], vec)
+            return vecs
         try:
             resp = ollama.embed(model=config.OLLAMA_MODEL, input=prefixed)
             vecs = [v[: config.VECTOR_DIM] for v in resp.embeddings]
+            # A short embeddings list would be silently truncated by zip below,
+            # leaving some chunks unindexed with no error anywhere.
+            if len(vecs) != len(texts):
+                raise EmbeddingError(
+                    f"Ollama returned {len(vecs)} vectors for {len(texts)} texts"
+                )
             # Cache all results
             for text, vec in zip(texts, vecs):
                 cache_key = hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
                 self._cache_put(cache_key, vec)
             return vecs
-        except (httpx.ConnectError, ollama.ResponseError) as exc:
+        except (httpx.HTTPError, ollama.ResponseError, ConnectionError, OSError) as exc:
             raise EmbeddingError(
                 f"Ollama unavailable for batch embedding: {exc}"
             ) from exc
@@ -155,7 +239,7 @@ class Indexer:
     # Indexing
     # ------------------------------------------------------------------
 
-    def index_vault(self) -> int:
+    def index_vault(self, force: bool = False) -> int:
         """Index all sessions and qnotes in the vault. Returns total chunk count."""
         vault = Path(config.VAULT_PATH).resolve()
 
@@ -170,7 +254,7 @@ class Indexer:
             md_files.extend(glob.glob(pattern, recursive=True))
 
         if not md_files:
-            print("No markdown files found in vault.")
+            log.info("No markdown files found in vault.")
             return 0
 
         # First pass: chunk everything
@@ -180,24 +264,27 @@ class Indexer:
             rel_path = str(Path(fpath).relative_to(vault)).replace("\\", "/")
             chunks = self._chunker.chunk_file(text, rel_path)
             all_chunks.extend(chunks)
-            print(f"  Chunked: {rel_path} -> {len(chunks)} chunks")
+            log.info(f"  Chunked: {rel_path} -> {len(chunks)} chunks")
 
         if not all_chunks:
-            print("No chunks produced.")
+            log.info("No chunks produced.")
             return 0
 
         # Fit BM25 on entire corpus
         self._bm25.fit([c.chunk_text for c in all_chunks])
         self._bm25.save(self._bm25_path)
-        print(f"  BM25 fitted on {self._bm25.n_docs} chunks, vocab size: {len(self._bm25.vocab)}")
+        log.info(f"  BM25 fitted on {self._bm25.n_docs} chunks, vocab size: {len(self._bm25.vocab)}")
 
         # Upsert in batches of 32, skipping unchanged
         total = 0
         for i in range(0, len(all_chunks), 32):
             batch = all_chunks[i : i + 32]
-            total += self._upsert_chunks(batch, skip_unchanged=True)
+            # force=True re-encodes every chunk. Without it, unchanged chunks
+            # keep whatever sparse vector they were written with — which is
+            # exactly how a stale encoding survives a "full" reindex.
+            total += self._upsert_chunks(batch, skip_unchanged=not force)
 
-        print(f"  Total indexed: {total} chunks")
+        log.info(f"  Total indexed: {total} chunks")
         return total
 
     def index_session(self, session_id: str) -> int:
@@ -256,7 +343,7 @@ class Indexer:
                     changed.append(chunk)
 
             if skipped:
-                print(f"  Skipped {skipped} unchanged chunks")
+                log.info(f"  Skipped {skipped} unchanged chunks")
             if not changed:
                 return 0
             chunks = changed
@@ -295,6 +382,30 @@ class Indexer:
     # ------------------------------------------------------------------
     # Search
     # ------------------------------------------------------------------
+
+    def close(self) -> None:
+        """Release the Qdrant client.
+
+        In embedded mode Qdrant holds a lock on its storage directory. A
+        process that exits without closing leaves it behind, and the next start
+        fails with a lock error that looks like corruption.
+        """
+        client, self._client = self._client, None
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _has_sparse_terms(sparse) -> bool:
+        """Whether a sparse vector carries anything worth querying.
+
+        Defensive, not a fix for an observed failure: on a fresh install the
+        BM25 state is empty, so every query encodes to an empty vector. Sending
+        that as a prefetch asks the engine to score nothing.
+        """
+        return bool(getattr(sparse, "indices", None))
 
     def search(
         self,
@@ -367,13 +478,23 @@ class Indexer:
 
     def get_session_chunks(self, session_id: str) -> list[dict]:
         """Retrieve all indexed chunks for a session, sorted by chunk_index."""
-        results, _ = self._client.scroll(
-            collection_name=self._collection,
-            scroll_filter=Filter(
-                must=[FieldCondition(key="session_id", match=MatchValue(value=session_id))]
-            ),
-            limit=1000,
-        )
+        # Paginated. A flat limit=1000 silently truncated long sessions — the
+        # caller got a partial session with no indication it was partial.
+        results = []
+        offset = None
+        while True:
+            batch, offset = self._client.scroll(
+                collection_name=self._collection,
+                scroll_filter=Filter(
+                    must=[FieldCondition(key="session_id",
+                                         match=MatchValue(value=session_id))]
+                ),
+                limit=256,
+                offset=offset,
+            )
+            results.extend(batch)
+            if offset is None:
+                break
         chunks = []
         for point in results:
             chunk = dict(point.payload)

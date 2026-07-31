@@ -10,9 +10,7 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 import random
-import sys
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -312,7 +310,7 @@ def main():
     entities = generate_entities(args.entities)
 
     # --- Relations ---
-    print(f"  Generating relations...")
+    print("  Generating relations...")
     relations = generate_relations(entities, ratio=0.8)
     print(f"    {len(relations)} relations created")
 
@@ -363,7 +361,7 @@ def main():
     # --- Summary ---
     total_md_files = args.sessions + args.qnotes
     total_md_size = sum(f.stat().st_size for f in vault_dir.rglob("*.md")) / (1024 * 1024)
-    print(f"\n  Summary:")
+    print("\n  Summary:")
     print(f"    Entities:    {len(entities):>8,}")
     print(f"    Relations:   {len(relations):>8,}")
     print(f"    Observations:{total_obs:>8,}")

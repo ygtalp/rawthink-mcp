@@ -1,0 +1,57 @@
+name: Publish to MCP Registry
+
+# Runs after a version tag, and only after the PyPI release exists — the
+# registry verifies package ownership, so publishing before PyPI has the
+# version fails.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # OIDC, so no long-lived token is stored. The GitHub namespace
+      # (io.github.<owner>/...) is proven by the workflow's own identity.
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version must match the tag
+        # server.json carries the version twice and pyproject a third time.
+        # A registry entry pointing at a version that was never published is
+        # worse than no entry: it resolves, installs nothing, and looks like
+        # the package is broken.
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          sj=$(python -c "import json;d=json.load(open('server.json'));print(d['version'])")
+          sp=$(python -c "import json;d=json.load(open('server.json'));print(d['packages'][0]['version'])")
+          pp=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "tag=$tag server.json=$sj package=$sp pyproject=$pp"
+          test "$tag" = "$sj" -a "$tag" = "$sp" -a "$tag" = "$pp"
+
+      - name: Wait for the version to appear on PyPI
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          for i in $(seq 1 30); do
+            if curl -fsS "https://pypi.org/pypi/rawthink-mcp/$v/json" >/dev/null; then
+              echo "rawthink-mcp $v is on PyPI"; exit 0
+            fi
+            echo "not yet ($i/30)"; sleep 20
+          done
+          echo "rawthink-mcp $v never appeared on PyPI"; exit 1
+
+      - name: Install the publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          ./mcp-publisher --version
+
+      - name: Log in with GitHub OIDC
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        run: ./mcp-publisher publish

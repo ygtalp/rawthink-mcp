@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from rawthink_mcp.graph import KnowledgeGraph, normalize_turkish
+from rawthink_mcp.graph import KnowledgeGraph
 from rawthink_mcp.indexer import Indexer, EmbeddingError
 
 
@@ -289,7 +289,7 @@ def print_report(metrics: list[QueryMetrics], label: str = "BASELINE") -> dict:
     # Aggregate by category
     categories = sorted(set(m.category for m in metrics))
     if len(categories) > 1:
-        print(f"\n  BY CATEGORY (Graph P@5 / Qdrant P@5):")
+        print("\n  BY CATEGORY (Graph P@5 / Qdrant P@5):")
         for cat in categories:
             cat_metrics = [m for m in metrics if m.category == cat]
             nc = len(cat_metrics)
@@ -337,7 +337,7 @@ def main():
         sys.exit(1)
 
     print(f"  Ground truth: {len(GROUND_TRUTH)} queries")
-    print(f"\nRunning evaluations...")
+    print("\nRunning evaluations...")
 
     metrics = []
     for gt in GROUND_TRUTH:

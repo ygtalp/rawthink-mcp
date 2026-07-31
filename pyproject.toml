@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rawthink-mcp"
-version = "1.5.0"
+version = "2.0.0"
 description = "Persistent memory MCP server for AI development workflows — hybrid search, knowledge graph, session lifecycle."
 readme = "README.md"
 license = "MIT"
@@ -30,12 +30,14 @@ dependencies = [
     "ollama>=0.4.0",
     "httpx>=0.27.0",
     "markdown>=3.5.0",
+    "filelock>=3.13",
 ]
 
 [project.scripts]
 rawthink-mcp = "rawthink_mcp.server:main"
 rawthink-export = "rawthink_mcp.session_export:main"
 rawthink-install = "rawthink_mcp.install:main"
+rawthink-doctor = "rawthink_mcp.doctor:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["rawthink_mcp"]
@@ -55,9 +57,33 @@ include = [
     "SETUP.md",
     "docker-compose.yml",
     "pyproject.toml",
+    "server.json",
+    "CHANGELOG.md",
+    "docs",
+]
+# include patterns match at any depth, so a bare "README.md" also pulled in
+# tests/README.md. The allowlist is what keeps tests out of the sdist, so it
+# gets an explicit exclude rather than a more careful pattern.
+exclude = [
+    "tests",
+    ".github",
+    "vault",
 ]
 
 [project.urls]
 Homepage = "https://github.com/ygtalp/rawthink-mcp"
 Repository = "https://github.com/ygtalp/rawthink-mcp"
 Issues = "https://github.com/ygtalp/rawthink-mcp/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+# Integration and measurement tests need services this repo does not start for
+# you. They are opt-in rather than auto-detected: a suite that silently skips
+# on a missing service reports green for a run that checked nothing.
+addopts = "-m 'not integration and not measurement'"
+
+[tool.ruff]
+line-length = 100

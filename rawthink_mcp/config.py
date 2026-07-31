@@ -20,6 +20,14 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "bge-m3")
 VECTOR_DIM = 1024
 EMBED_INSTRUCTION = ""  # BGE-M3 does not require instruction prefix
 
+# BM25 sparse state. Lives with the vault, not with the package: two vaults on
+# one machine used to share a single IDF table, and a read-only install could
+# not write it at all.
+BM25_STATE_FILE = os.environ.get(
+    "RAWTHINK_BM25_STATE",
+    os.path.join(VAULT_PATH, ".bm25_state.json"),
+)
+
 # Knowledge graph
 MEMORY_FILE = os.environ.get(
     "MEMORY_FILE_PATH",

@@ -1,5 +1,16 @@
 # Search Routing Analysis
 
+## Status
+
+Accepted — hybrid with RRF, as analysed here
+
+## Date
+
+2026-04
+
+## Context
+
+
 RAWThink has two independent search systems. Should they stay separate, merge into one unified tool, or use intelligent routing?
 
 ## Current Architecture
@@ -64,7 +75,7 @@ Single tool that always queries both systems and returns merged results.
 - No routing logic needed
 
 **Cons:**
-- **Token waste**: most queries only need one system. "What is entropy?" doesn't need 10 narrative chunks. "When did I discuss DMT?" doesn't need entity observations.
+- **Token waste**: most queries only need one system. "What is entropy?" doesn't need 10 narrative chunks. "When did I first discuss this?" doesn't need entity observations.
 - **Response bloat**: MCP tool responses are injected into context. 7K tokens per search adds up — 3 searches in a conversation = 21K tokens of search results.
 - **Slower**: must wait for both systems (Qdrant embedding is ~100ms, graph is ~50ms at current scale)
 - **Harder to read**: mixed result types (entities interleaved with narrative chunks) are confusing

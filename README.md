@@ -67,9 +67,24 @@ command. Use `rawthink-install --vault ~/my-vault` for a different location.
 claude mcp add --scope user rawthink -- rawthink-mcp
 ```
 
+### Check the install
+
+```bash
+rawthink-doctor
+```
+
+Nine checks with a fix line for each failure: vault, graph schema, BM25 state
+format, Qdrant, **index coverage**, vector dimension, Ollama, MCP registration.
+
+The index coverage check is the one worth knowing about. Indexing can stop
+partway and leave a collection that looks healthy — it exists, it has points,
+queries return results. They are results from part of the vault, and nothing
+else tells you that.
+
 ### Upgrading from 0.x
 
-**1.5.0 changes the graph schema.** Migrate before writing anything:
+**1.5.0 changed the graph schema and 2.0.0 changes the sparse index.**
+Migrate the graph before writing anything:
 
 ```bash
 python -m rawthink_mcp.migrate --path vault/memory.jsonl --guess-domains --heal-dangling
@@ -77,6 +92,15 @@ python -m rawthink_mcp.migrate --path vault/memory.jsonl --guess-domains --heal-
 
 That is a dry run — it prints what would change and writes nothing. Read the
 report, then re-run with `--apply`. A timestamped backup is taken first.
+
+Then re-encode the search index, because BM25 term IDs changed:
+
+```
+reindex(full=True)
+```
+
+A plain reindex skips unchanged chunks and will leave the old encoding in
+place. `rawthink-doctor` tells you if this is still pending.
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed and why.
 
@@ -112,18 +136,18 @@ queryable over years rather than months.
 
 `entityType` answers **what role does this node play**. Closed list of ten:
 
-| type | for |
-|---|---|
-| `decision` | a choice made, with alternatives rejected |
-| `concept` | an idea, theory, model, analogy |
-| `finding` | something discovered or measured — a bug, a result, an audit |
-| `rule` | a durable constraint or pattern to follow |
-| `open-question` | unresolved, waiting on evidence |
-| `artifact` | a project, tool, document, feature, source |
-| `insight` | a realisation that changed how something is seen |
-| `task` | a unit of intended work |
-| `event` | something that happened at a point in time |
-| `thing` | a person, object or substance named directly |
+| type            | for                                                          |
+| --------------- | ------------------------------------------------------------ |
+| `decision`      | a choice made, with alternatives rejected                    |
+| `concept`       | an idea, theory, model, analogy                              |
+| `finding`       | something discovered or measured — a bug, a result, an audit |
+| `rule`          | a durable constraint or pattern to follow                    |
+| `open-question` | unresolved, waiting on evidence                              |
+| `artifact`      | a project, tool, document, feature, source                   |
+| `insight`       | a realisation that changed how something is seen             |
+| `task`          | a unit of intended work                                      |
+| `event`         | something that happened at a point in time                   |
+| `thing`         | a person, object or substance named directly                 |
 
 `domain` answers **what subject is it about**: `software`, `music`, `history`,
 `philosophy`, `health`, `writing`, `neuro`, `finance`, `personal`, `galaxy`.
@@ -197,31 +221,31 @@ call it.
 
 ### Search
 
-| tool | what it does |
-|---|---|
+| tool              | what it does                                                |
+| ----------------- | ----------------------------------------------------------- |
 | `search_thoughts` | Hybrid search. `mode="overview"` gives one line per session |
-| `get_session` | Full content of a session by ID |
-| `store_thought` | Save a quick note as a qnote |
-| `reindex` | Re-index the vault into Qdrant |
+| `get_session`     | Full content of a session by ID                             |
+| `store_thought`   | Save a quick note as a qnote                                |
+| `reindex`         | Re-index the vault into Qdrant                              |
 
 ### Graph — reading
 
-| tool | what it does |
-|---|---|
+| tool           | what it does                                                                            |
+| -------------- | --------------------------------------------------------------------------------------- |
 | `search_nodes` | Bounded. Filters by `domain` and `entity_type`; reports `total_matched` and `truncated` |
-| `open_nodes` | Specific entities with their relations |
-| `read_graph` | Whole graph, paginated, with a summary mode |
+| `open_nodes`   | Specific entities with their relations                                                  |
+| `read_graph`   | Whole graph, paginated, with a summary mode                                             |
 
 ### Graph — writing
 
-| tool | what it does |
-|---|---|
-| `record` | Entities, relations and observations in one validated, atomic call |
-| `record_decision` | A decision with its rejected alternatives |
-| `revise` | Mark observations superseded, link what replaced them |
-| `create_entities` · `create_relations` · `add_observations` | Lower-level equivalents |
-| `invalidate_observations` | Belief revision without the relation link |
-| `delete_entities` · `delete_observations` · `delete_relations` | `full` profile only |
+| tool                                                           | what it does                                                       |
+| -------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `record`                                                       | Entities, relations and observations in one validated, atomic call |
+| `record_decision`                                              | A decision with its rejected alternatives                          |
+| `revise`                                                       | Mark observations superseded, link what replaced them              |
+| `create_entities` · `create_relations` · `add_observations`    | Lower-level equivalents                                            |
+| `invalidate_observations`                                      | Belief revision without the relation link                          |
+| `delete_entities` · `delete_observations` · `delete_relations` | `full` profile only                                                |
 
 `record()` validates the whole batch before writing any of it. A half-valid
 batch writes nothing — a graph left in a state nobody asked for is worse than a
@@ -283,17 +307,17 @@ tools work with any MCP client.
 
 ## Configuration
 
-| Setting | Env var | Default |
-|---|---|---|
-| Vault path | `RAWTHINK_VAULT` | `../vault` |
-| Knowledge graph file | `MEMORY_FILE_PATH` | `<vault>/memory.jsonl` |
-| Qdrant URL | `QDRANT_URL` | `http://localhost:6333` |
-| Qdrant embedded path | `QDRANT_PATH` | — (set it to skip Docker) |
-| Ollama URL | `OLLAMA_URL` | `http://localhost:11434` |
-| Embedding model | `OLLAMA_MODEL` | `bge-m3` |
-| Tool profile | `RAWTHINK_TOOL_PROFILE` | `full` |
-| Turkish normalization | `RAWTHINK_TURKISH_NORMALIZATION` | `false` |
-| Evaluation set | `RAWTHINK_EVAL_GT` | `tests/ground_truth.example.json` |
+| Setting               | Env var                          | Default                           |
+| --------------------- | -------------------------------- | --------------------------------- |
+| Vault path            | `RAWTHINK_VAULT`                 | `../vault`                        |
+| Knowledge graph file  | `MEMORY_FILE_PATH`               | `<vault>/memory.jsonl`            |
+| Qdrant URL            | `QDRANT_URL`                     | `http://localhost:6333`           |
+| Qdrant embedded path  | `QDRANT_PATH`                    | — (set it to skip Docker)         |
+| Ollama URL            | `OLLAMA_URL`                     | `http://localhost:11434`          |
+| Embedding model       | `OLLAMA_MODEL`                   | `bge-m3`                          |
+| Tool profile          | `RAWTHINK_TOOL_PROFILE`          | `full`                            |
+| Turkish normalization | `RAWTHINK_TURKISH_NORMALIZATION` | `false`                           |
+| Evaluation set        | `RAWTHINK_EVAL_GT`               | `tests/ground_truth.example.json` |
 
 Vocabularies — `ENTITY_TYPES`, `DOMAINS`, `RELATION_TYPES`, `RELATION_ALIASES` —
 live in `rawthink_mcp/config.py`. Adding a domain is a one-line change.
@@ -318,30 +342,31 @@ two copies of one document drift silently.
 
 Stated plainly, because a README that lists only strengths is not much use.
 
-**Concurrent writes can lose updates.** Graph mutations take no file lock. One
-session at a time against a vault is safe; two are not. An earlier version of
-this document claimed multi-terminal safety — the code did not support that
-claim, and it has been removed rather than quietly left in.
-
 **Ollama being unavailable degrades to sparse-only.** The embedding cache helps
 repeated queries; it is not a fallback. Retrieval quality drops noticeably.
 
-**BM25 term IDs are corpus-dependent.** Sparse vectors go stale after a reindex,
-and RRF hides it because the dense side still works. Fixing it needs a full
-re-encode — that is what 2.0.0 is for.
+**Graceful shutdown is POSIX-only.** Signal handlers release the Qdrant
+directory lock and the graph file lock on SIGINT/SIGTERM. Windows has no real
+SIGTERM — a terminating client calls TerminateProcess and no handler runs — so
+a hard stop there can leave a lock behind. Ctrl-C still unwinds, and
+`rawthink-doctor` reports the stale lock.
 
-**Load time grows with the graph.** The whole JSONL is parsed on every read.
+**Load time grows with the graph.** The whole JSONL is parsed on the first read
+after a change. Subsequent reads reuse a cache keyed on (mtime, size).
+
+**Search quality has not been benchmarked at scale.** The retrieval numbers
+that used to be here were never re-measured, so they were removed rather than
+carried forward. `tests/search_quality.py` runs against a synthetic vault and
+reports MRR/nDCG; point `RAWTHINK_EVAL_GT` at your own evaluation set for a
+number that means something for your data.
 
 ---
 
 ## Roadmap
 
-**2.0.0** — BM25 term-ID stability (breaking; requires a full reindex),
-per-vault BM25 state, atomic graph writes with a file lock, `rawthink-doctor`
-for install diagnostics, a unit test suite and CI.
-
-**Later** — graph visualisation, MCP-native session lifecycle so the close
-command is not Claude Code specific, support for more MCP clients.
+**Next** — graph visualisation, MCP-native session lifecycle so the close
+command is not Claude Code specific, support for more MCP clients, and a
+retrieval benchmark that runs on data anyone can regenerate.
 
 ---
 
@@ -352,6 +377,10 @@ Issues and pull requests welcome.
 If you change the schema, change `config.py`, the migration in `migrate.py`, and
 the session-close instructions together. They are three views of one contract,
 and they drift apart quietly when they are not edited as a set.
+
+`docs/postmortem-bm25-term-drift.md` is the clearest example — a defect that
+looked fine from every angle until someone evaluated the two retrievers
+separately.
 
 ## License
 

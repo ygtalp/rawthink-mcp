@@ -1,6 +1,6 @@
 """Scale benchmark for RAWThink — measures performance at 10K entity / 500 session scale.
 
-Tests graph operations (JSONL parse, index build, search, write) and
+Tests graph operations (JSONL parse, index build, search) and
 Qdrant operations (indexing, hybrid search) with synthetic data.
 
 Usage:
@@ -114,7 +114,11 @@ def bench_graph_load(memory_path: str, rounds: int = 5) -> dict:
 
 
 def bench_search_nodes(memory_path: str, rounds: int = 3) -> dict:
-    """Benchmark: search_nodes latency (includes read + index + search + touch + write)."""
+    """Benchmark: search_nodes latency (read + index + search).
+
+    It no longer writes. open_nodes used to refresh activation on the read
+    path, so every read produced a diff; activation is refreshed on write now.
+    """
     # Pre-warm: first load
     kg = KnowledgeGraph(path=memory_path)
     kg._read_all()  # noqa: SLF001
@@ -122,16 +126,16 @@ def bench_search_nodes(memory_path: str, rounds: int = 3) -> dict:
     all_times = []
     for _ in range(rounds):
         for query in SEARCH_QUERIES:
-            # Each search_nodes call reads file, builds index, searches, touches, writes
+            # Each search_nodes call reads the file, builds the index and searches
             kg_fresh = KnowledgeGraph(path=memory_path)
             gc.collect()
             start = time.perf_counter()
-            result = kg_fresh.search_nodes(query)
+            kg_fresh.search_nodes(query)   # timed for its cost, not its value
             elapsed = (time.perf_counter() - start) * 1000
             all_times.append(elapsed)
 
     return {
-        "operation": "search_nodes (full cycle: read + index + search + touch + write)",
+        "operation": "search_nodes (read + index + search)",
         "queries": len(SEARCH_QUERIES),
         "rounds": rounds,
         "total_searches": len(all_times),
@@ -220,7 +224,7 @@ def bench_read_graph(memory_path: str, rounds: int = 3) -> dict:
         kg = KnowledgeGraph(path=memory_path)
         gc.collect()
         start = time.perf_counter()
-        result = kg.read_graph()
+        kg.read_graph()   # timed for its cost, not its value
         elapsed = (time.perf_counter() - start) * 1000
         times.append(elapsed)
 
@@ -338,7 +342,7 @@ def bench_qdrant_search(vault_path: str, rounds: int = 3) -> dict | None:
 
 def print_report(results: list[dict], data_summary: dict) -> None:
     print(f"\n{'=' * 90}")
-    print(f"  RAWTHINK SCALE BENCHMARK")
+    print("  RAWTHINK SCALE BENCHMARK")
     print(f"{'=' * 90}")
     print(f"  Data: {data_summary.get('entities', '?')} entities, "
           f"{data_summary.get('relations', '?')} relations, "
@@ -358,7 +362,7 @@ def print_report(results: list[dict], data_summary: dict) -> None:
 
     # Bottleneck analysis
     print(f"\n{'=' * 90}")
-    print(f"  BOTTLENECK ANALYSIS")
+    print("  BOTTLENECK ANALYSIS")
     print(f"{'=' * 90}")
 
     search_full = next((r for r in results if "full cycle" in r.get("operation", "")), None)
@@ -371,7 +375,7 @@ def print_report(results: list[dict], data_summary: dict) -> None:
         load_p50 = load["p50_ms"]
         write_overhead = full_p50 - readonly_p50
 
-        print(f"\n  Per search_nodes call (p50):")
+        print("\n  Per search_nodes call (p50):")
         print(f"    JSONL parse + index build:  {load_p50:>8.1f} ms")
         print(f"    Search + match:             {readonly_p50 - load_p50:>8.1f} ms")
         print(f"    Disk write (activation):    {write_overhead:>8.1f} ms")
@@ -380,9 +384,9 @@ def print_report(results: list[dict], data_summary: dict) -> None:
 
         if full_p50 > 500:
             print(f"\n  WARNING: Search latency >{full_p50:.0f}ms — consider:")
-            print(f"    - Lazy activation writes (batch, not per-search)")
-            print(f"    - Persistent in-memory cache across calls")
-            print(f"    - Separate hot path (search) from cold path (write)")
+            print("    - Lazy activation writes (batch, not per-search)")
+            print("    - Persistent in-memory cache across calls")
+            print("    - Separate hot path (search) from cold path (write)")
         elif full_p50 > 100:
             print(f"\n  NOTE: Search latency {full_p50:.0f}ms — acceptable for MCP tool response")
             print(f"    but activation write overhead ({write_overhead:.0f}ms) is optimizable")
@@ -409,7 +413,7 @@ def main():
 
     if not os.path.exists(memory_path):
         print(f"ERROR: No benchmark data found at {data_dir}")
-        print(f"Run first: python -m tests.generate_synthetic_data")
+        print("Run first: python -m tests.generate_synthetic_data")
         sys.exit(1)
 
     # Gather data summary
@@ -439,7 +443,7 @@ def main():
         "qnotes": n_qnotes,
     }
 
-    print(f"RAWThink Scale Benchmark")
+    print("RAWThink Scale Benchmark")
     print(f"Data: {data_dir}")
     print(f"  {len(entities)} entities, {len(relations)} relations, {total_obs} observations")
     print(f"  JSONL: {format_bytes(file_size)}")

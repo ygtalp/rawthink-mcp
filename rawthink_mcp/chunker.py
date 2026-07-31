@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -25,6 +25,7 @@ class ThoughtChunk:
     line_end: int
     content_hash: str
     source_type: str  # "session" | "qnote"
+    session_ref: str = ""  # for qnotes: the session this note came out of
 
     def to_payload(self) -> dict:
         """Convert to Qdrant payload dict."""
@@ -40,6 +41,7 @@ class ThoughtChunk:
             "line_end": self.line_end,
             "content_hash": self.content_hash,
             "source_type": self.source_type,
+            "session_ref": self.session_ref,
         }
 
 

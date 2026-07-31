@@ -23,9 +23,7 @@ Requires: Qdrant running (localhost:6333), Ollama running (BGE-M3), vault popula
 """
 from __future__ import annotations
 
-import json
 import sys
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ygtalp/rawthink-mcp",
+  "title": "RAWThink",
+  "description": "Persistent memory for AI thinking partnerships: hybrid search and a temporal knowledge graph.",
+  "repository": {
+    "url": "https://github.com/ygtalp/rawthink-mcp",
+    "source": "github"
+  },
+  "version": "2.0.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "rawthink-mcp",
+      "version": "2.0.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "RAWTHINK_VAULT",
+          "description": "Path to the vault directory holding sessions, qnotes and the knowledge graph.",
+          "default": "../vault"
+        },
+        {
+          "name": "MEMORY_FILE_PATH",
+          "description": "Path to memory.jsonl. Defaults to <vault>/memory.jsonl."
+        },
+        {
+          "name": "QDRANT_URL",
+          "description": "Qdrant server URL.",
+          "default": "http://localhost:6333"
+        },
+        {
+          "name": "QDRANT_PATH",
+          "description": "Set to a directory to run Qdrant embedded instead of via Docker."
+        },
+        {
+          "name": "OLLAMA_URL",
+          "description": "Ollama server URL. Without it, retrieval degrades to sparse-only.",
+          "default": "http://localhost:11434"
+        },
+        {
+          "name": "OLLAMA_MODEL",
+          "description": "Embedding model. Changing it requires a full reindex.",
+          "default": "bge-m3"
+        },
+        {
+          "name": "RAWTHINK_TOOL_PROFILE",
+          "description": "Which tools to expose: recall (4, read-only), record (5, the write path), or full (17).",
+          "default": "full"
+        },
+        {
+          "name": "RAWTHINK_BM25_STATE",
+          "description": "Path to the BM25 state file. Defaults to <vault>/.bm25_state.json."
+        },
+        {
+          "name": "RAWTHINK_LOG_LEVEL",
+          "description": "Log level for diagnostics on stderr.",
+          "default": "INFO"
+        }
+      ]
+    }
+  ]
+}

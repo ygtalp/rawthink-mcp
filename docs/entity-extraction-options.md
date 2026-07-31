@@ -1,5 +1,16 @@
 # Entity Extraction: Approach Comparison
 
+## Status
+
+Superseded by the controlled vocabulary in 2.0.0
+
+## Date
+
+2026-04
+
+## Context
+
+
 How should RAWThink extract entities, relations, and observations from session transcripts?
 
 Currently: manual — the LLM reads the session during `/rtclose` and calls graph tools. This works but depends entirely on prompt quality and LLM attention. At scale (long sessions, dense content), extraction quality degrades because the LLM is doing extraction as a side task, not its primary focus.

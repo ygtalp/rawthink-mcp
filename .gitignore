@@ -3,6 +3,8 @@ __pycache__/
 .bm25_state.json
 qdrant_data/
 vault/memory.jsonl
+vault/memory.jsonl.lock
+.memory-*.jsonl.tmp
 vault/handoff-*.md
 .env
 dist/
@@ -24,3 +26,6 @@ vault/archive/raw/*
 !vault/archive/raw/.gitkeep
 vault/outputs/*
 !vault/outputs/.gitkeep
+.ruff_cache/
+.coverage
+htmlcov/

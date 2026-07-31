@@ -22,7 +22,11 @@ Knowledge graph tools:
 from __future__ import annotations
 
 import json
+import signal
 import os
+import sys
+import logging
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -33,6 +37,63 @@ from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
 from .indexer import Indexer, EmbeddingError
 from .graph import KnowledgeGraph, SchemaError
 from . import config
+
+log = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def _lifespan(server):
+    """Release external resources on the way out.
+
+    Verified against the installed FastMCP rather than assumed: the constructor
+    takes `lifespan`, and the callable receives the server. Qdrant in embedded
+    mode holds a directory lock, and the graph holds a file lock — a process
+    killed without releasing them leaves the next start failing on a lock error
+    that reads like corruption.
+    """
+    try:
+        yield {}
+    finally:
+        _shutdown()
+
+
+def _shutdown() -> None:
+    """Idempotent teardown. Safe to call from a signal handler and from
+    lifespan exit; whichever runs first wins and the other is a no-op."""
+    global _indexer, _graph
+    idx, _indexer = _indexer, None
+    graph, _graph = _graph, None
+    for obj in (idx, graph):
+        if obj is None:
+            continue
+        try:
+            obj.close()
+        except Exception as exc:  # never let teardown mask the real exit reason
+            log.warning("shutdown: %s", exc)
+
+
+def _install_signal_handlers() -> None:
+    """SIGINT and SIGTERM should unwind, not kill.
+
+    Without these, `docker stop` or a terminated Claude Code session leaves the
+    Qdrant lock file behind.
+
+    POSIX only in practice. Windows has no real SIGTERM: a terminating client
+    calls TerminateProcess and no handler runs, so locks can survive a hard
+    stop there. Ctrl-C still unwinds, and `rawthink-doctor` reports a stale
+    lock — but the shutdown path cannot be relied on to fire on Windows.
+    """
+    def _handler(signum, _frame):
+        log.info("received signal %s, shutting down", signum)
+        _shutdown()
+        raise SystemExit(0)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            # Not the main thread, or the platform lacks the signal.
+            pass
+
 
 def _package_version() -> str:
     """Report OUR version, not the framework's.
@@ -79,6 +140,7 @@ _ALLOWED = _PROFILES[_PROFILE]
 mcp = FastMCP(
     name="rawthink",
     version=_package_version(),
+    lifespan=_lifespan,
     instructions=(
         "Semantic search across your RAWThink vault — sessions, "
         "qnotes, and personal insights. Use search_thoughts for natural "
@@ -277,7 +339,13 @@ def store_thought(
     tags_yaml = ", ".join(f'"{t}"' for t in tags_list)
     session_ref = session_id or ""
 
+    # The explicit `id` matters: without it a later index_vault derives the id
+    # from the filename and writes the same qnote a second time under a
+    # different session_id. Two copies, no error, and search returns both.
+    qnote_id = f"qnote_{date_str}_{time_str}"
+
     content = f"""---
+id: "{qnote_id}"
 date: {date_str}
 tags: [{tags_yaml}]
 session_ref: "{session_ref}"
@@ -295,7 +363,7 @@ session_ref: "{session_ref}"
     import hashlib
 
     chunk = ThoughtChunk(
-        session_id=f"qnote_{date_str}_{time_str}",
+        session_id=qnote_id,
         title="Quick Note",
         date=date_str,
         tags=tags_list,
@@ -306,6 +374,7 @@ session_ref: "{session_ref}"
         line_end=1,
         content_hash=hashlib.sha256(text.encode()).hexdigest()[:32],
         source_type="qnote",
+        session_ref=session_ref,
     )
 
     try:
@@ -331,8 +400,8 @@ def reindex(session_id: Optional[str] = None, full: bool = False) -> str:
             count = idx.index_session(session_id)
             return f"Reindexed session '{session_id}': {count} chunks."
         elif full:
-            count = idx.index_vault()
-            return f"Full vault reindex complete: {count} chunks."
+            count = idx.index_vault(force=True)
+            return f"Full vault reindex complete: {count} chunks re-encoded."
         else:
             count = idx.index_vault()
             return f"Vault indexed: {count} chunks."
@@ -678,6 +747,15 @@ def open_nodes(names: list[str]) -> str:
 
 def main():
     """Entry point for the MCP server."""
+    # First thing, before anything can log: send diagnostics to stderr. stdout
+    # is the JSON-RPC channel and a single stray line breaks the protocol
+    # without any error surfacing on this side.
+    logging.basicConfig(
+        stream=sys.stderr,
+        level=os.environ.get("RAWTHINK_LOG_LEVEL", "INFO").upper(),
+        format="%(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
     # Eager initialization — warm up Qdrant + graph at server start
     # so first tool call doesn't pay initialization cost
     try:
@@ -690,7 +768,11 @@ def main():
     except Exception:
         global _indexer
         _indexer = None  # Reset for lazy retry (Qdrant lock or Ollama down)
-    mcp.run()
+    _install_signal_handlers()
+    try:
+        mcp.run()
+    finally:
+        _shutdown()
 
 
 if __name__ == "__main__":

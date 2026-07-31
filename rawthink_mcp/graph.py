@@ -9,11 +9,18 @@ Tier 2: Activation decay, in-memory inverted index for search.
 """
 from __future__ import annotations
 
+import bisect
+import functools
 import json
 import math
 import os
+import tempfile
+import threading
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
+
+from filelock import FileLock
 
 from . import config
 
@@ -170,6 +177,23 @@ def normalize_relation_type(value: str | None) -> str:
 # Knowledge Graph
 # ---------------------------------------------------------------------------
 
+def _serialized(method):
+    """Run a mutating method under both locks, on a freshly read graph.
+
+    Read-modify-write without a lock is how two sessions lose each other's
+    updates: the second reads before the first has written, then overwrites it.
+    Applied as a decorator so every mutation gets it and none can be forgotten
+    by writing a new one that looks like the others.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._rlock, self._flock:
+            self._cached_items = None      # force the next read to hit disk
+            self._cache_sig = None
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class KnowledgeGraph:
     """JSONL-backed knowledge graph with Turkish-aware search."""
 
@@ -177,13 +201,39 @@ class KnowledgeGraph:
         self._path = Path(path or config.MEMORY_FILE).resolve()
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._index: dict[str, set[str]] | None = None  # token -> entity names
+        self._sorted_tokens: list[str] = []             # for prefix search
         self._cached_items: list[dict] | None = None
+        self._cache_sig: tuple[int, int] | None = None  # (mtime_ns, size)
+        # Two locks, deliberately. FileLock serialises across processes — several
+        # Claude Code sessions can hold the same vault open. RLock serialises
+        # across threads, because FastMCP may run tools in a pool and a
+        # process-level lock is reentrant from inside one process, so it would
+        # let two threads through.
+        self._rlock = threading.RLock()
+        self._flock = FileLock(str(self._path) + ".lock", timeout=30)
 
     # --- internal I/O ---
 
-    def _read_all(self) -> list[dict]:
+    def _read_all(self, force: bool = False) -> list[dict]:
+        """Read the graph, reusing the cache when the file has not moved.
+
+        The cache was written but never read, so every tool call re-parsed the
+        whole file and rebuilt the inverted index. The signature is
+        (mtime_ns, size): cheap, and it catches both an edit and a same-size
+        rewrite by a different process.
+
+        `force=True` skips the cache — mutations need the current file, not
+        what this process last saw.
+        """
         if not self._path.exists():
             return []
+        if not force and self._cached_items is not None:
+            try:
+                st = self._path.stat()
+                if self._cache_sig == (st.st_mtime_ns, st.st_size):
+                    return self._cached_items
+            except OSError:
+                pass
         lines = self._path.read_text(encoding="utf-8").strip().splitlines()
         items = []
         for line in lines:
@@ -198,24 +248,65 @@ class KnowledgeGraph:
                     ]
                 items.append(item)
         self._cached_items = items
+        try:
+            st = self._path.stat()
+            self._cache_sig = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            self._cache_sig = None
         self._build_index(items)
         return items
 
     def _write_all(self, items: list[dict]) -> None:
-        """Atomic write: write to .tmp then os.replace()."""
+        """Atomic write.
+
+        The old version used a fixed `.jsonl.tmp` name, so two processes writing
+        at once clobbered each other's temp file and one update vanished with no
+        error. mkstemp gives each writer its own file; fsync makes the content
+        durable before the rename; os.replace is atomic, so a reader sees either
+        the whole old file or the whole new one — never a half-written graph.
+        """
         text = "\n".join(json.dumps(item, ensure_ascii=False) for item in items)
-        tmp = self._path.with_suffix(".jsonl.tmp")
-        tmp.write_text(text + "\n", encoding="utf-8")
-        os.replace(str(tmp), str(self._path))
-        # Invalidate caches
+        fd, tmp = tempfile.mkstemp(dir=str(self._path.parent),
+                                   prefix=".memory-", suffix=".jsonl.tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, str(self._path))
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
         self._cached_items = None
+        self._cache_sig = None
         self._index = None
+        self._sorted_tokens = []
+
+    @contextmanager
+    def _transaction(self):
+        """The single mutation path: lock, read fresh, yield, write.
+
+        Every mutating method goes through this. Read-modify-write without a
+        lock is how concurrent sessions lose each other's updates — the second
+        writer reads before the first has written, and overwrites it.
+        """
+        with self._rlock, self._flock:
+            items = self._read_all(force=True)
+            yield items
+            self._write_all(items)
 
     def _entities(self, items: list[dict] | None = None) -> list[dict]:
-        return [i for i in (items or self._read_all()) if i.get("type") == "entity"]
+        # `items or self._read_all()` re-read on an empty list, because [] is
+        # falsy — an empty graph cost a second full parse on every call.
+        source = self._read_all() if items is None else items
+        return [i for i in source if i.get("type") == "entity"]
 
     def _relations(self, items: list[dict] | None = None) -> list[dict]:
-        return [i for i in (items or self._read_all()) if i.get("type") == "relation"]
+        source = self._read_all() if items is None else items
+        return [i for i in source if i.get("type") == "relation"]
 
     # --- inverted index (Tier 2) ---
 
@@ -241,6 +332,7 @@ class KnowledgeGraph:
                 if tok:
                     idx.setdefault(tok, set()).add(name)
         self._index = idx
+        self._sorted_tokens = sorted(idx)
 
     # --- activation decay (Tier 2) ---
 
@@ -294,10 +386,14 @@ class KnowledgeGraph:
         if self._index and tokens:
             for tok in tokens:
                 matched_names: set[str] = set()
-                for idx_tok, names in self._index.items():
-                    # Exact match always; prefix/substring only for tokens >= 3 chars
-                    if tok == idx_tok or (len(tok) >= 3 and tok in idx_tok):
-                        matched_names.update(names)
+                # Prefix, not substring. Substring made 'art' match 'smart' and
+                # scanned the whole vocabulary for every query token. bisect on
+                # the sorted token list finds the prefix block directly.
+                lo = bisect.bisect_left(self._sorted_tokens, tok)
+                for idx_tok in self._sorted_tokens[lo:]:
+                    if not idx_tok.startswith(tok):
+                        break
+                    matched_names.update(self._index[idx_tok])
                 for name in matched_names:
                     candidate_scores[name] = candidate_scores.get(name, 0) + 1
         else:
@@ -356,6 +452,7 @@ class KnowledgeGraph:
             "truncated": total_matched > len(page) or total_relations > len(relations),
         }
 
+    @_serialized
     def create_entities(self, entities: list[dict]) -> list[dict]:
         """Create entities, merging observations if name already exists."""
         all_items = self._read_all()
@@ -440,6 +537,7 @@ class KnowledgeGraph:
         self._write_all(all_items)
         return created
 
+    @_serialized
     def create_relations(self, relations: list[dict]) -> list[dict]:
         """Create relations, skipping duplicates. Validates relation types against controlled vocabulary."""
         all_items = self._read_all()
@@ -475,6 +573,7 @@ class KnowledgeGraph:
         self._write_all(all_items)
         return created
 
+    @_serialized
     def add_observations(self, observations: list[dict]) -> list[dict]:
         """Add observations to existing entities."""
         all_items = self._read_all()
@@ -512,6 +611,7 @@ class KnowledgeGraph:
         self._write_all(all_items)
         return results
 
+    @_serialized
     def invalidate_observations(self, entity_name: str, observations: list[str],
                                  superseded_by: str | None = None) -> dict:
         """Mark observations as invalidated with timestamp. Optionally note what superseded them."""
@@ -537,20 +637,23 @@ class KnowledgeGraph:
 
     def delete_entities(self, names: list[str]) -> list[str]:
         """Delete entities and their relations."""
-        all_items = self._read_all()
-        names_set = set(names)
-        remaining = [
-            item for item in all_items
-            if not (
-                (item.get("type") == "entity" and item.get("name") in names_set)
-                or (item.get("type") == "relation" and (
-                    item.get("from") in names_set or item.get("to") in names_set
-                ))
-            )
-        ]
-        self._write_all(remaining)
-        return list(names_set)
+        with self._rlock, self._flock:
+            all_items = self._read_all(force=True)
+            existing = {e["name"] for e in self._entities(all_items)}
+            names_set = set(names) & existing   # only report what was really there
+            remaining = [
+                item for item in all_items
+                if not (
+                    (item.get("type") == "entity" and item.get("name") in names_set)
+                    or (item.get("type") == "relation" and (
+                        item.get("from") in names_set or item.get("to") in names_set
+                    ))
+                )
+            ]
+            self._write_all(remaining)
+        return sorted(names_set)
 
+    @_serialized
     def delete_observations(self, deletions: list[dict]) -> list[dict]:
         """Delete specific observations from entities (matches on text field)."""
         all_items = self._read_all()
@@ -573,6 +676,7 @@ class KnowledgeGraph:
         self._write_all(all_items)
         return results
 
+    @_serialized
     def delete_relations(self, relations: list[dict]) -> list[dict]:
         """Delete specific relations."""
         all_items = self._read_all()
@@ -600,6 +704,7 @@ class KnowledgeGraph:
     # operation.
     # -----------------------------------------------------------------
 
+    @_serialized
     def record(self, entities: list[dict] | None = None,
                relations: list[dict] | None = None,
                observations: list[dict] | None = None) -> dict:
@@ -780,8 +885,24 @@ class KnowledgeGraph:
             result["supersedes_edge"] = f"{superseding_entity} -> {entity_name}"
         return result
 
+    def close(self) -> None:
+        """Release the inter-process lock if this process still holds it."""
+        try:
+            if self._flock.is_locked:
+                self._flock.release(force=True)
+        except Exception:
+            pass
+
     def read_graph(self) -> dict:
-        """Return all entities and relations."""
+        """Return all entities and relations, with stored activation as-is.
+
+        Decay is applied where activation is *used* for ranking — search_nodes
+        sorts by it, and the summary view in the server reports the decayed
+        value. This returns the raw record, so a caller reading the graph sees
+        the same numbers that are on disk. The module docstring used to imply
+        decay was applied here; it was not, and the honest fix was to say so
+        rather than to add a transformation nobody asked for.
+        """
         all_items = self._read_all()
         return {
             "entities": self._entities(all_items),
@@ -789,14 +910,16 @@ class KnowledgeGraph:
         }
 
     def open_nodes(self, names: list[str]) -> dict:
-        """Return specific entities and their relations. Touches activation."""
+        """Return specific entities and their relations. Pure read.
+
+        This used to write on the read path to refresh activation, which meant
+        every read produced a diff — and the file is meant to be git-diffable,
+        so reading it defeated the point. Activation is refreshed on write
+        instead; reading something is weaker evidence of relevance than
+        recording something about it.
+        """
         all_items = self._read_all()
         names_set = set(names)
-
-        # Touch activation on accessed entities
-        if self._touch_entities(names_set, all_items):
-            self._write_all(all_items)
-            all_items = self._read_all()
 
         entities = [
             e for e in self._entities(all_items) if e["name"] in names_set

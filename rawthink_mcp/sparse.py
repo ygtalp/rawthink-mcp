@@ -5,6 +5,7 @@ vectors suitable for Qdrant hybrid search alongside dense embeddings.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -55,6 +56,8 @@ class BM25Tokenizer:
         vec = tok.encode("what were the rules of consciousness?")
     """
 
+    FORMAT_VERSION = 2
+
     def __init__(self, k1: float = 1.2, b: float = 0.75) -> None:
         self.k1 = k1
         self.b = b
@@ -66,6 +69,28 @@ class BM25Tokenizer:
     # ------------------------------------------------------------------
     # Tokenization
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Term IDs
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def term_id(token: str) -> int:
+        """Stable, corpus-independent ID for a token.
+
+        Positional IDs — `enumerate(sorted(vocab))` — were the defect this
+        replaces. One new token sorting early shifted every ID after it, so
+        vectors written before a reindex no longer matched queries encoded
+        after it. Nothing failed; the sparse side simply stopped matching, and
+        RRF hid it because the dense side still worked.
+
+        A hash of the token depends on nothing but the token, so an ID assigned
+        today is the same ID next year on a different corpus.
+
+        31 bits: Qdrant sparse indices must be non-negative and fit u32.
+        """
+        digest = hashlib.blake2b(token.encode("utf-8"), digest_size=4).digest()
+        return int.from_bytes(digest, "big") & 0x7FFFFFFF
 
     @staticmethod
     def tokenize(text: str) -> list[str]:
@@ -126,8 +151,9 @@ class BM25Tokenizer:
 
         self.avgdl = total_length / self.n_docs
 
-        all_tokens = sorted(df.keys())
-        self.vocab = {token: idx for idx, token in enumerate(all_tokens)}
+        # vocab is no longer the source of IDs — it is a "have we seen this
+        # token" set plus a place to hang statistics. IDs come from term_id().
+        self.vocab = {token: self.term_id(token) for token in df}
 
         self.idf = {}
         for token, freq in df.items():
@@ -161,7 +187,7 @@ class BM25Tokenizer:
             )
             score = idf * (numerator / denominator)
             if score > 0:
-                indices.append(self.vocab[token])
+                indices.append(self.term_id(token))
                 values.append(round(score, 6))
 
         return SparseVector(indices=indices, values=values)
@@ -173,6 +199,10 @@ class BM25Tokenizer:
     def save(self, path: str) -> None:
         """Serialize vocab + IDF state to a JSON file."""
         state = {
+            # Bumped when the ID scheme changes. A state file written under the
+            # old positional scheme is not merely outdated — it is wrong, and
+            # loading it silently would reproduce the exact defect this fixes.
+            "format_version": self.FORMAT_VERSION,
             "k1": self.k1,
             "b": self.b,
             "vocab": self.vocab,
@@ -187,6 +217,14 @@ class BM25Tokenizer:
     def load(self, path: str) -> None:
         """Deserialize vocab + IDF state from a JSON file."""
         state = json.loads(Path(path).read_text(encoding="utf-8"))
+        version = state.get("format_version", 1)
+        if version < self.FORMAT_VERSION:
+            raise ValueError(
+                f"legacy BM25 state (format_version={version}, need "
+                f"{self.FORMAT_VERSION}). Term IDs were corpus-dependent in "
+                f"that format. Delete {path} and run a full reindex — "
+                f"reindex(full=True) — to re-encode every chunk."
+            )
         self.k1 = state["k1"]
         self.b = state["b"]
         self.vocab = state["vocab"]
