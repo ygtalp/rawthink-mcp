@@ -19,7 +19,9 @@ from pathlib import Path
 # Vocabulary pools for realistic data generation
 # ---------------------------------------------------------------------------
 
-ENTITY_TYPES = ["concept", "decision", "rule", "insight", "question", "project"]
+# Canonical entityType values from config.ENTITY_TYPES. A generator that
+# emits types the write path rejects produces a vault nothing can write to.
+ENTITY_TYPES = ["concept", "decision", "rule", "insight", "open-question", "artifact"]
 EPISTEMIC = ["assertion", "hypothesis", "speculation", None, None]  # None = omitted
 
 TOPIC_POOLS = {
@@ -54,13 +56,13 @@ TOPIC_POOLS = {
         "activation-decay", "hybrid-search-value", "graph-traversal-power",
         "explicit-contradictions", "knowledge-compilation", "incremental-indexing",
     ],
-    "question": [
+    "open-question": [
         "consciousness-substrate", "simulation-boundary", "free-will-mechanism",
         "emergence-threshold", "optimal-chunk-size", "graph-vs-vector-tradeoff",
         "scaling-limit", "temporal-resolution", "confidence-calibration",
         "cross-domain-transfer", "language-model-understanding", "agency-definition",
     ],
-    "project": [
+    "artifact": [
         "rawthink", "knowledge-compiler", "semantic-search", "side-project",
         "graph-explorer", "session-manager", "belief-tracker", "pattern-detector",
         "insight-miner", "context-bridge", "memory-consolidator", "query-optimizer",

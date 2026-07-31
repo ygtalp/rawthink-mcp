@@ -40,6 +40,23 @@ rawthink-install = "rawthink_mcp.install:main"
 [tool.hatch.build.targets.wheel]
 packages = ["rawthink_mcp"]
 
+# Explicit allowlist. Without it hatchling ships everything that is not
+# gitignored, which put tests/ — and the personal names hardcoded in its
+# evaluation fixtures — into the published sdist.
+[tool.hatch.build.targets.sdist]
+include = [
+    "rawthink_mcp",
+    "scripts",
+    ".claude",
+    "README.md",
+    "LICENSE",
+    "CLAUDE.md",
+    "THINKING_DIRECTIVES.md",
+    "SETUP.md",
+    "docker-compose.yml",
+    "pyproject.toml",
+]
+
 [project.urls]
 Homepage = "https://github.com/ygtalp/rawthink-mcp"
 Repository = "https://github.com/ygtalp/rawthink-mcp"

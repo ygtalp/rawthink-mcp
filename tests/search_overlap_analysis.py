@@ -41,23 +41,11 @@ from rawthink_mcp.indexer import Indexer, EmbeddingError
 # Test queries — designed to cover different retrieval scenarios
 # ---------------------------------------------------------------------------
 
-QUERIES = [
-    # Philosophical concepts — should hit both graph entities AND session text
-    "bilinc kurallari",
-    "simulasyon hipotezi",
-    "entropi garbage collector",
-    # Technical architecture — graph has entities, sessions have discussion
-    "rawthink mimari",
-    "qdrant hybrid search",
-    # Personal decisions — stored as graph entities AND discussed in sessions
-    "NL relocation",
-    "vitamin D eksikligi",
-    # Cross-cutting themes
-    "strange loop Hofstadter",
-    "activation decay",
-    # Broad / ambiguous
-    "ozgur irade determinizm",
-]
+# Queries come from the same evaluation file as the quality harness, so the
+# two measure the same thing. Point RAWTHINK_EVAL_GT at your own set.
+from search_quality import load_overlap_queries  # noqa: E402
+
+QUERIES = load_overlap_queries()
 
 
 @dataclass

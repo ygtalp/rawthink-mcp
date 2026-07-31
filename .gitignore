@@ -11,6 +11,8 @@ tests/bench_data/
 tests/benchmark_results.json
 tests/search_quality_baseline.json
 tests/search_quality_after_fix.json
+# Your own evaluation set — personal by nature, never commit it
+tests/ground_truth.local.json
 *.zip
 
 # Vault content (personal data) — ignore contents but keep dirs

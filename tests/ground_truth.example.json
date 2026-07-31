@@ -1,0 +1,99 @@
+{
+  "_comment": [
+    "Evaluation fixture for the synthetic vault produced by generate_synthetic_data.py.",
+    "Entity names come from that generator's TOPIC_POOLS, so this runs on any machine.",
+    "",
+    "The real evaluation set is personal — it names health notes, session dates and",
+    "people. Keep yours outside the repo and point RAWTHINK_EVAL_GT at it:",
+    "  RAWTHINK_EVAL_GT=~/rawthink-private/ground_truth.json python -m tests.search_quality",
+    "",
+    "Entity matching is prefix-based: the generator appends -N or -vN suffixes, so",
+    "'entropy' matches 'entropy-42' and 'entropy-v3'."
+  ],
+  "queries": [
+    {
+      "query": "entropy and emergence",
+      "expected_entities": ["entropy", "emergence", "complexity"],
+      "expected_sessions": [],
+      "category": "concept"
+    },
+    {
+      "query": "self reference and recursion",
+      "expected_entities": ["self-reference", "recursion", "strange-loop-pattern"],
+      "expected_sessions": [],
+      "category": "concept"
+    },
+    {
+      "query": "which database did we choose",
+      "expected_entities": ["database-choice", "storage-format"],
+      "expected_sessions": [],
+      "category": "decision"
+    },
+    {
+      "query": "caching and queue decisions",
+      "expected_entities": ["caching-layer", "queue-system"],
+      "expected_sessions": [],
+      "category": "decision"
+    },
+    {
+      "query": "verify before stating",
+      "expected_entities": ["verify-before-stating", "epistemic-transparency"],
+      "expected_sessions": [],
+      "category": "rule"
+    },
+    {
+      "query": "atomic writes and idempotency",
+      "expected_entities": ["atomic-writes", "idempotent-operations"],
+      "expected_sessions": [],
+      "category": "rule"
+    },
+    {
+      "query": "hybrid search value",
+      "expected_entities": ["hybrid-search-value", "graph-traversal-power"],
+      "expected_sessions": [],
+      "category": "insight"
+    },
+    {
+      "query": "belief revision and activation decay",
+      "expected_entities": ["belief-revision", "activation-decay"],
+      "expected_sessions": [],
+      "category": "insight"
+    },
+    {
+      "query": "graph versus vector tradeoff",
+      "expected_entities": ["graph-vs-vector-tradeoff", "optimal-chunk-size"],
+      "expected_sessions": [],
+      "category": "open-question"
+    },
+    {
+      "query": "consciousness substrate",
+      "expected_entities": ["consciousness-substrate", "consciousness"],
+      "expected_sessions": [],
+      "category": "open-question"
+    },
+    {
+      "query": "rawthink semantic search project",
+      "expected_entities": ["rawthink", "semantic-search"],
+      "expected_sessions": [],
+      "category": "artifact"
+    },
+    {
+      "query": "circuit breaker and backpressure",
+      "expected_entities": ["circuit-breaker", "backpressure", "bulkhead-isolation"],
+      "expected_sessions": [],
+      "category": "rule"
+    }
+  ],
+  "overlap_queries": [
+    "entropy and emergence",
+    "self reference and recursion",
+    "database choice",
+    "verify before stating",
+    "hybrid search value",
+    "graph vs vector tradeoff",
+    "rawthink architecture",
+    "activation decay",
+    "atomic writes",
+    "consciousness substrate"
+  ]
+}

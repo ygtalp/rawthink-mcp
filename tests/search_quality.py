@@ -16,6 +16,7 @@ import json
 import math
 import sys
 import time
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -37,147 +38,52 @@ class GroundTruth:
     category: str = ""              # for grouping in report
 
 
-GROUND_TRUTH: list[GroundTruth] = [
-    # --- Philosophical concepts ---
-    GroundTruth(
-        query="bilinc kurallari",
-        expected_entities=[
-            "bilinc-kurali-1-self-reference",
-            "bilinc-kurali-2-compression",
-            "bilinc-kurali-3-non-duality",
-            "bilinc-kurali-4-acik",
-        ],
-        expected_sessions=["2026-03-16_002"],
-        category="philosophy",
-    ),
-    GroundTruth(
-        query="simulasyon hipotezi evren",
-        expected_entities=["simulasyon-hipotezi", "evren-genislemesi"],
-        expected_sessions=["2026-03-16_001", "2026-03-28_004"],
-        category="philosophy",
-    ),
-    GroundTruth(
-        query="entropi garbage collector",
-        expected_entities=["entropi"],
-        expected_sessions=["2026-03-16_002"],
-        category="philosophy",
-    ),
-    GroundTruth(
-        query="ozgur irade determinizm",
-        expected_entities=["ozgur-irade"],
-        expected_sessions=["2026-03-16_002"],
-        category="philosophy",
-    ),
-    GroundTruth(
-        query="strange loop self reference",
-        expected_entities=[
-            "bilinc-kurali-1-self-reference",
-            "spark-self-reference",
-            "strange-loop-bilgi-grafi",
-        ],
-        expected_sessions=["2026-04-10_001", "2026-04-10_002"],
-        category="philosophy",
-    ),
-    GroundTruth(
-        query="adem metaforu bilgi agaci",
-        expected_entities=["adem-metaforu"],
-        expected_sessions=["2026-03-16_002"],
-        category="philosophy",
-    ),
-    # --- Technical decisions ---
-    GroundTruth(
-        query="rawthink mimari katman",
-        expected_entities=["rawthink-mimari", "global-beyin-mimarisi"],
-        expected_sessions=["2026-04-09_002", "2026-04-09_003"],
-        category="technical",
-    ),
-    GroundTruth(
-        query="qdrant vector search hybrid",
-        expected_entities=["rawthink-mimari", "vector-db-arastirmasi-2026"],
-        expected_sessions=["2026-04-02_003"],
-        category="technical",
-    ),
-    GroundTruth(
-        query="kapat komutu session export",
-        expected_entities=["kapat-komutu"],
-        expected_sessions=["2026-03-30_002"],
-        category="technical",
-    ),
-    GroundTruth(
-        query="activation decay lambda",
-        expected_entities=["tier12-implementation", "rawthink-mimari"],
-        expected_sessions=["2026-04-12_001"],
-        category="technical",
-    ),
-    GroundTruth(
-        query="thinking directives epistemik",
-        expected_entities=["thinking-directives", "session-direktifleri"],
-        expected_sessions=["2026-04-12_003"],
-        category="technical",
-    ),
-    # --- Personal ---
-    GroundTruth(
-        query="NL relocation Hollanda",
-        expected_entities=["nl-relocation", "yigit-profil"],
-        expected_sessions=["2026-03-28_004"],
-        category="personal",
-    ),
-    GroundTruth(
-        query="vitamin D eksikligi kan tahlili",
-        expected_entities=[
-            "vitamin-d-eksikligi",
-            "yigit-saglik-tahlil-2026-04",
-        ],
-        expected_sessions=["2026-04-03_002"],
-        category="personal",
-    ),
-    GroundTruth(
-        query="anksiyete pattern kosullu varolus",
-        expected_entities=["anksiyete-pattern", "kosullu-varolus-pattern"],
-        expected_sessions=["2026-04-02_001"],
-        category="personal",
-    ),
-    # --- DMT & neuroscience ---
-    GroundTruth(
-        query="DMT molekul default mode network",
-        expected_entities=["dmt-molekulu", "dmt-default-mode-network"],
-        expected_sessions=["2026-04-03_001"],
-        category="dmt",
-    ),
-    GroundTruth(
-        query="uzerlik MAO inhibitor ayahuasca",
-        expected_entities=["uzerlik-mao-inhibitor-paradoksu"],
-        expected_sessions=["2026-04-03_001"],
-        category="dmt",
-    ),
-    # --- Project management ---
-    GroundTruth(
-        query="codebase audit results",
-        expected_entities=[
-            "codebase-audit-2026-04-01",
-        ],
-        expected_sessions=["2026-04-01_002"],
-        category="project",
-    ),
-    # --- Edge cases ---
-    GroundTruth(
-        query="D vitamini",
-        expected_entities=["vitamin-d-eksikligi"],
-        expected_sessions=["2026-04-03_002"],
-        category="edge-case",
-    ),
-    GroundTruth(
-        query="Karpathy LLM wiki convergence",
-        expected_entities=[
-            "karpathy-yakinlasma",
-            "personal-neural-graphs-article",
-        ],
-        expected_sessions=["2026-04-10_001", "2026-04-10_002"],
-        category="edge-case",
-    ),
-]
+# ---------------------------------------------------------------------------
+# Ground truth loading
+#
+# The evaluation set used to be hardcoded here, which meant two things: the
+# harness only ran on one person's vault, and personal names — health notes,
+# session dates — shipped with the package. Loading it from a file fixes both.
+#
+#   default  tests/ground_truth.example.json  (synthetic vault, runs anywhere)
+#   yours    RAWTHINK_EVAL_GT=~/rawthink-private/ground_truth.json
+#
+# Keep your own set outside the repo. It is the more useful measurement, and it
+# is the one that should never be committed.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_GT = Path(__file__).parent / "ground_truth.example.json"
 
 
+def _load_eval_file() -> dict:
+    path = Path(os.environ.get("RAWTHINK_EVAL_GT", _DEFAULT_GT)).expanduser()
+    if not path.exists():
+        raise SystemExit(
+            f"evaluation set not found: {path}\n"
+            f"Set RAWTHINK_EVAL_GT to your own file, or keep "
+            f"{_DEFAULT_GT.name} in place for the synthetic vault."
+        )
+    with path.open(encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def load_ground_truth() -> list[GroundTruth]:
+    return [
+        GroundTruth(
+            query=q["query"],
+            expected_entities=q.get("expected_entities", []),
+            expected_sessions=q.get("expected_sessions", []),
+            category=q.get("category", ""),
+        )
+        for q in _load_eval_file().get("queries", [])
+    ]
+
+
+def load_overlap_queries() -> list[str]:
+    return _load_eval_file().get("overlap_queries", [])
+
+
+GROUND_TRUTH: list[GroundTruth] = load_ground_truth()
 # ---------------------------------------------------------------------------
 # IR Metrics
 # ---------------------------------------------------------------------------
