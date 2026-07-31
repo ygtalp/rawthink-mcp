@@ -31,19 +31,81 @@ from fastmcp import FastMCP
 from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
 
 from .indexer import Indexer, EmbeddingError
-from .graph import KnowledgeGraph
+from .graph import KnowledgeGraph, SchemaError
 from . import config
+
+def _package_version() -> str:
+    """Report OUR version, not the framework's.
+
+    FastMCP falls back to its own version when none is given, so a client
+    asking what it is talking to got FastMCP's number and no way to tell.
+    A plausible-looking wrong version is worse than an empty one.
+    """
+    try:
+        from importlib.metadata import version
+        return version("rawthink-mcp")
+    except Exception:
+        return "0.0.0+unknown"
+
+
+# ---------------------------------------------------------------------------
+# Tool profiles
+#
+# Every tool definition sits in the context window from the first token of a
+# session, so the surface is a standing cost, not a per-call one. Profiles let
+# a caller load only what that step actually needs: a phase pipeline writing a
+# decision has no business holding delete tools.
+#
+#   recall — read-only lookup
+#   record — the write path, plus enough lookup to avoid duplicates
+#   full   — everything, including destructive and maintenance tools
+#
+# Set RAWTHINK_TOOL_PROFILE. Default is `full`, so existing setups are
+# unaffected until they opt in.
+# ---------------------------------------------------------------------------
+
+_PROFILES: dict[str, set[str] | None] = {
+    "recall": {"search_thoughts", "search_nodes", "get_session", "open_nodes"},
+    "record": {"search_nodes", "record", "record_decision", "revise", "store_thought"},
+    "full": None,  # None = register everything
+}
+
+_PROFILE = os.environ.get("RAWTHINK_TOOL_PROFILE", "full").strip().lower()
+if _PROFILE not in _PROFILES:
+    _PROFILE = "full"
+
+_ALLOWED = _PROFILES[_PROFILE]
 
 mcp = FastMCP(
     name="rawthink",
+    version=_package_version(),
     instructions=(
         "Semantic search across your RAWThink vault — sessions, "
         "qnotes, and personal insights. Use search_thoughts for natural "
         "language queries like 'what did I think about free will?'\n\n"
-        "Also provides knowledge graph tools (search_nodes, create_entities, etc.) "
-        "with optional Turkish character normalization."
+        "Knowledge graph tools use a controlled vocabulary: entityType is the "
+        "role a node plays (decision, concept, finding, rule, open-question, "
+        "artifact, insight, task, event, thing) and `domain` is the subject "
+        "area. Write through record() or record_decision(); they validate "
+        "before writing and reject unknown types rather than warning.\n\n"
+        "To revise a belief use revise(), never delete — an archive that "
+        "forgets what you used to think cannot answer why you changed your mind."
     ),
 )
+
+
+def _tool(**kw):
+    """Register a tool only when the active profile includes it.
+
+    A tool left unregistered stays an ordinary function: still importable,
+    still callable from the CLI and from tests. It simply does not consume
+    context in sessions that will never call it.
+    """
+    def deco(fn):
+        if _ALLOWED is not None and fn.__name__ not in _ALLOWED:
+            return fn
+        return mcp.tool(**kw)(fn)
+    return deco
 
 # ---------------------------------------------------------------------------
 # Lazy singletons
@@ -73,12 +135,13 @@ def _get_graph() -> KnowledgeGraph:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@_tool(annotations={'readOnlyHint': True, 'idempotentHint': True, 'openWorldHint': False})
 def search_thoughts(
     query: str,
     source_type: Optional[str] = None,
     tags: Optional[list[str]] = None,
     limit: int = 10,
+    mode: str = "full",
 ) -> str:
     """Search vault content with hybrid semantic + keyword search.
 
@@ -87,6 +150,8 @@ def search_thoughts(
         source_type: Filter by "session" or "qnote".
         tags: Filter by tags (e.g. ["philosophy", "consciousness"]).
         limit: Max results (default 10).
+        mode: "full" returns matching passages; "overview" returns one line per
+            session (id, title, score) for orientation before drilling in.
     """
     idx = _get_indexer()
 
@@ -110,6 +175,24 @@ def search_thoughts(
     if not results:
         return "No results found."
 
+    if mode == "overview":
+        # One line per session, deduplicated. Was a separate get_related tool;
+        # it called the same search with a terser format, and two tools with
+        # near-identical descriptions is how a model picks the wrong one.
+        parts: list[str] = []
+        seen: set[str] = set()
+        for hit in results:
+            session = hit.get("session_id", "")
+            if session in seen:
+                continue
+            seen.add(session)
+            parts.append(
+                f"- **[{session}]** {hit.get('title','')} — "
+                f"{hit.get('section_heading','')} "
+                f"(score: {hit.get('score',0):.4f}, {hit.get('date','')})"
+            )
+        return "\n".join(parts)
+
     parts: list[str] = []
     for i, hit in enumerate(results, 1):
         session = hit.get("session_id", "")
@@ -131,7 +214,7 @@ def search_thoughts(
     return "\n\n---\n\n".join(parts)
 
 
-@mcp.tool()
+@_tool(annotations={'readOnlyHint': True, 'idempotentHint': True, 'openWorldHint': False})
 def get_session(session_id: str) -> str:
     """Get full content of a session by reading the markdown file directly.
 
@@ -163,46 +246,7 @@ def get_session(session_id: str) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-@mcp.tool()
-def get_related(query: str, limit: int = 5) -> str:
-    """Find related past thoughts — quick semantic search.
-
-    Returns just session IDs, titles, and scores for overview.
-
-    Args:
-        query: What to look for (e.g. "entropy as garbage collector").
-        limit: Max results (default 5).
-    """
-    idx = _get_indexer()
-
-    try:
-        results = idx.search(query=query, limit=limit)
-    except EmbeddingError as exc:
-        return f"**Embedding error:** {exc}"
-
-    if not results:
-        return "No related thoughts found."
-
-    parts: list[str] = []
-    seen_sessions: set[str] = set()
-
-    for hit in results:
-        session = hit.get("session_id", "")
-        if session in seen_sessions:
-            continue
-        seen_sessions.add(session)
-
-        title = hit.get("title", "")
-        score = hit.get("score", 0)
-        section = hit.get("section_heading", "")
-        date = hit.get("date", "")
-
-        parts.append(f"- **[{session}]** {title} — {section} (score: {score:.4f}, {date})")
-
-    return "\n".join(parts)
-
-
-@mcp.tool()
+@_tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': False})
 def store_thought(
     text: str,
     session_id: Optional[str] = None,
@@ -271,7 +315,7 @@ session_ref: "{session_ref}"
         return f"Saved file but embedding failed: {exc}"
 
 
-@mcp.tool()
+@_tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True})
 def reindex(session_id: Optional[str] = None, full: bool = False) -> str:
     """Re-index vault content into the search database.
 
@@ -301,21 +345,34 @@ def reindex(session_id: Optional[str] = None, full: bool = False) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
-def search_nodes(query: str) -> str:
-    """Search for nodes in the knowledge graph based on a query.
-
-    Character normalization is applied if enabled in config.
+@_tool(annotations={'readOnlyHint': True, 'idempotentHint': True, 'openWorldHint': False})
+def search_nodes(
+    query: str,
+    limit: int = 10,
+    max_relations: int = 50,
+    domain: Optional[str] = None,
+    entity_type: Optional[str] = None,
+) -> str:
+    """Search the knowledge graph. Bounded: returns `total_matched` alongside
+    a capped page, so a truncated result is visible rather than silent.
 
     Args:
-        query: The search query to match against entity names, types, and observations.
+        query: Matched against entity names, types and observations.
+        limit: Max entities returned (default 10).
+        max_relations: Max relations returned (default 50).
+        domain: Narrow to one subject area (software, music, history, ...).
+        entity_type: Narrow to one role (decision, concept, finding, rule, ...).
     """
     kg = _get_graph()
-    result = kg.search_nodes(query)
+    try:
+        result = kg.search_nodes(query, limit=limit, max_relations=max_relations,
+                                 domain=domain, entity_type=entity_type)
+    except SchemaError as exc:
+        return f"**Schema error:** {exc}"
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@_tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True})
 def create_entities(entities: list[dict]) -> str:
     """Create multiple new entities in the knowledge graph.
 
@@ -338,7 +395,7 @@ def create_entities(entities: list[dict]) -> str:
     return json.dumps(created, ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@_tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True})
 def create_relations(relations: list[dict]) -> str:
     """Create multiple new relations between entities. Relations should be in active voice.
 
@@ -355,7 +412,7 @@ def create_relations(relations: list[dict]) -> str:
     return json.dumps(created, ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@_tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True})
 def add_observations(observations: list[dict]) -> str:
     """Add new observations to existing entities in the knowledge graph.
 
@@ -367,7 +424,112 @@ def add_observations(observations: list[dict]) -> str:
     return json.dumps(results, ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@_tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True})
+def record(
+    entities: Optional[list[dict]] = None,
+    relations: Optional[list[dict]] = None,
+    observations: Optional[list[dict]] = None,
+) -> str:
+    """Write entities, relations and observations in one validated, atomic call.
+
+    This is the single write path. Everything is validated before anything is
+    written, so a batch that is half-valid writes nothing.
+
+    Entity fields: name, entityType (required for new), domain (required for
+    new), epistemic (assertion|hypothesis|speculation|unknown, default
+    unknown), visibility (private|shareable, default private), observations.
+    An observation may be a string, or {"text": ..., "kind": ...} where kind is
+    note|decided|rejected|because|touches.
+
+    Relations use the canonical vocabulary; close synonyms are folded, unknown
+    types are rejected. A relation may only point at an entity that exists or
+    is being created in this same call.
+
+    Args:
+        entities: Entities to create or merge into.
+        relations: Relations to create.
+        observations: [{"entityName": ..., "contents": [...], "kind": ...}]
+    """
+    kg = _get_graph()
+    try:
+        return json.dumps(kg.record(entities, relations, observations),
+                          ensure_ascii=False, indent=2)
+    except SchemaError as exc:
+        return f"**Schema error:** {exc}"
+
+
+@_tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True})
+def record_decision(
+    name: str,
+    domain: str,
+    decided: str,
+    because: str,
+    rejected: Optional[list[str]] = None,
+    touches: Optional[list[str]] = None,
+    epistemic: str = "assertion",
+    visibility: Optional[str] = None,
+    supersedes: Optional[str] = None,
+) -> str:
+    """Record a decision: what was chosen, what was rejected, and why.
+
+    `rejected` is the field that makes this worth recording. What was chosen
+    stays readable in the code forever; what was considered and dropped exists
+    nowhere else, and it is the question that gets asked months later.
+
+    Args:
+        name: Stable identifier, e.g. "banking/phase-7: reference ID strategy".
+        domain: Subject area (software, music, history, ...).
+        decided: What was chosen.
+        because: The constraint or reasoning that forced it.
+        rejected: Alternatives considered and dropped, each with its reason.
+        touches: Files or symbols this decision governs.
+        epistemic: assertion | hypothesis | speculation | unknown.
+        visibility: private (default) | shareable.
+        supersedes: Name of a decision this one replaces.
+    """
+    kg = _get_graph()
+    try:
+        return json.dumps(
+            kg.record_decision(name=name, domain=domain, decided=decided,
+                               because=because, rejected=rejected, touches=touches,
+                               epistemic=epistemic, visibility=visibility,
+                               supersedes=supersedes),
+            ensure_ascii=False, indent=2)
+    except SchemaError as exc:
+        return f"**Schema error:** {exc}"
+
+
+@_tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True})
+def revise(
+    entity_name: str,
+    observations: list[str],
+    superseded_by: Optional[str] = None,
+    superseding_entity: Optional[str] = None,
+) -> str:
+    """Mark observations as no longer held, and link what replaced them.
+
+    Deliberately not a delete. Keeping the superseded belief, dated and linked,
+    is what lets the archive answer "why did we change our mind" later.
+
+    If you pass `superseding_entity`, record that entity first — a relation
+    cannot point at a name the graph does not know.
+
+    Args:
+        entity_name: Entity whose observations are being revised.
+        observations: Exact observation texts to invalidate.
+        superseded_by: Short description of what replaced them.
+        superseding_entity: Name of the entity that supersedes this one.
+    """
+    kg = _get_graph()
+    try:
+        return json.dumps(
+            kg.revise(entity_name, observations, superseded_by, superseding_entity),
+            ensure_ascii=False, indent=2)
+    except SchemaError as exc:
+        return f"**Schema error:** {exc}"
+
+
+@_tool(annotations={'readOnlyHint': False, 'destructiveHint': True, 'idempotentHint': True})
 def delete_entities(entityNames: list[str]) -> str:
     """Delete multiple entities and their associated relations from the knowledge graph.
 
@@ -379,7 +541,7 @@ def delete_entities(entityNames: list[str]) -> str:
     return json.dumps(deleted, ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@_tool(annotations={'readOnlyHint': False, 'destructiveHint': True, 'idempotentHint': True})
 def delete_observations(deletions: list[dict]) -> str:
     """Delete specific observations from entities in the knowledge graph.
 
@@ -391,7 +553,7 @@ def delete_observations(deletions: list[dict]) -> str:
     return json.dumps(results, ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@_tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True})
 def invalidate_observations(
     entity_name: str,
     observations: list[str],
@@ -412,7 +574,7 @@ def invalidate_observations(
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@_tool(annotations={'readOnlyHint': False, 'destructiveHint': True, 'idempotentHint': True})
 def delete_relations(relations: list[dict]) -> str:
     """Delete multiple relations from the knowledge graph.
 
@@ -424,7 +586,7 @@ def delete_relations(relations: list[dict]) -> str:
     return json.dumps(results, ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@_tool(annotations={'readOnlyHint': True, 'idempotentHint': True, 'openWorldHint': False})
 def read_graph(
     summary: bool = False,
     entity_type: Optional[str] = None,
@@ -500,7 +662,7 @@ def read_graph(
         return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@_tool(annotations={'readOnlyHint': True, 'idempotentHint': True, 'openWorldHint': False})
 def open_nodes(names: list[str]) -> str:
     """Open specific nodes in the knowledge graph by their names.
 

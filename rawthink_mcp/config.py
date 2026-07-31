@@ -29,11 +29,76 @@ MEMORY_FILE = os.environ.get(
 # Turkish character normalization — opt-in for Turkish users
 ENABLE_TURKISH_NORMALIZATION = os.environ.get("RAWTHINK_TURKISH_NORMALIZATION", "").lower() in ("1", "true", "yes")
 
+# ---------------------------------------------------------------------------
+# Controlled vocabularies
+#
+# entityType answers "what epistemic role does this node play"; `domain`
+# answers "what field is it in". Keeping them in separate fields is what stops
+# the type list from growing once per subject area.
+# ---------------------------------------------------------------------------
+
+ENTITY_TYPES = {
+    "decision",       # a choice that was made, with alternatives rejected
+    "concept",        # an idea, theory, model or analogy
+    "finding",        # something discovered or measured — bug, result, audit
+    "rule",           # a durable constraint or pattern to follow
+    "open-question",  # unresolved, waiting on evidence or a decision
+    "artifact",       # a project, tool, document, feature, source
+    "insight",        # a realisation that changed how something is seen
+    "task",           # a unit of intended work
+    "event",          # something that happened at a point in time
+    "thing",          # a person, object or substance referred to by name
+}
+
+DOMAINS = {
+    "software", "music", "history", "philosophy", "health",
+    "writing", "neuro", "finance", "personal", "galaxy",
+}
+
+EPISTEMIC_VALUES = {
+    "assertion",    # held to be true, with grounds
+    "hypothesis",   # plausible, not yet verified
+    "speculation",  # entertained, weakly supported
+    "unknown",      # never stated — the honest default, not a claim
+}
+DEFAULT_EPISTEMIC = "unknown"
+
+VISIBILITY_VALUES = {"private", "shareable"}
+DEFAULT_VISIBILITY = "private"
+
 # Controlled relation vocabulary
 RELATION_TYPES = {
     "supports", "contradicts", "evolved_into", "depends_on",
     "exemplifies", "part_of", "caused_by", "enables",
     "supersedes", "related_to",
+    # added from observed usage in a real vault
+    "investigates", "informs", "uses",
+}
+
+# Near-synonyms seen in practice, folded into the canonical form rather than
+# rejected. Rejecting a reasonable synonym trains callers to fight the
+# vocabulary; folding it keeps the graph queryable without the friction.
+RELATION_ALIASES = {
+    "connected_to": "related_to",
+    "aspect_of": "part_of",
+    "demonstrates": "exemplifies",
+    "extends": "evolved_into",
+    "instance_of": "exemplifies",
+    "supported_by": "supports",
+    "informed_by": "informs",
+    "used_by": "uses",
+    "validated_by": "supports",
+    "validates": "supports",
+    "solves": "enables",
+    "solved_by": "enables",
+    "requires": "depends_on",
+    "constrained_by": "depends_on",
+    "part": "part_of",
+    "parcasi": "part_of",
+    "icerir": "part_of",
+    "arastirir": "investigates",
+    "bilgilendirir": "informs",
+    "etkiler": "related_to",
 }
 
 # Activation decay — half-life ~23 days

@@ -636,22 +636,58 @@ PYTHONUTF8=1 rawthink-export "$JSONL_PATH" \\
 
 Read the generated clean dialog MD and feed the knowledge graph:
 
-1. Use `read_graph()` MCP tool to get the current graph
-2. For new concepts, rules, insights in the session:
-   - `create_entities()` to add new entities
-   - `create_relations()` to create connections
-   - `add_observations()` to add new info to existing entities
-3. Note the counts of added entities/relations
+1. `search_nodes(query, limit=10)` for the session's main subjects — check what
+   already exists before writing anything
+2. Write everything in ONE `record()` call: entities, relations and
+   observations together. It validates the whole batch before writing any of
+   it, so a half-valid extraction writes nothing rather than half a graph.
+3. Note the counts returned
 
-**Entity extraction criteria:**
-- Repeated or emphasized concepts in the session -> entity
-- Formulated rules or decisions -> entity (type: rule/decision)
-- Personal insights -> entity (type: insight)
-- Analogies and connections -> relation
-- Entity names in kebab-case
-- **Use project prefix for project-specific entities:** `myproject-performance-fix` vs `general-concept`
+**Every entity needs a role and a subject area. These are separate fields:**
 
-**If already exists:** Use `add_observations()` to add new info. Don't create duplicates.
+`entityType` — what role the node plays. Closed list, nothing else is accepted:
+
+| type | use for |
+|---|---|
+| `decision` | a choice made, with alternatives rejected |
+| `concept` | an idea, theory, model, analogy |
+| `finding` | something discovered or measured — bug, result, audit |
+| `rule` | a durable constraint or pattern to follow |
+| `open-question` | unresolved, waiting on evidence |
+| `artifact` | a project, tool, document, feature, source |
+| `insight` | a realisation that changed how something is seen |
+| `task` | a unit of intended work |
+| `event` | something that happened at a point in time |
+| `thing` | a person, object or substance named directly |
+
+`domain` — the subject area: `software`, `music`, `history`, `philosophy`,
+`health`, `writing`, `neuro`, `finance`, `personal`, `galaxy`.
+
+Keep them separate. Collapsing "a finding about health" into one type is how a
+vocabulary grows one entry per subject until nothing can be queried.
+
+`epistemic` — how strongly it is held: `assertion` (grounds exist),
+`hypothesis` (plausible, unverified), `speculation` (entertained), or omit for
+`unknown`. **Do not default to `assertion`.** If the session did not establish
+it, it is not an assertion.
+
+**Relations** use the canonical vocabulary: `supports`, `contradicts`,
+`evolved_into`, `depends_on`, `exemplifies`, `part_of`, `caused_by`, `enables`,
+`supersedes`, `related_to`, `investigates`, `informs`, `uses`. Close synonyms
+are folded automatically; anything else is rejected. If a connection needs a
+more specific description, put it in an observation and use the nearest
+canonical type.
+
+**Naming:** kebab-case. Use a project prefix for project-scoped entities
+(`myproject-performance-fix` vs `general-concept`).
+
+**If it already exists:** pass it in the same `record()` call with new
+observations. Merging is the default; you do not need a different tool.
+
+**If the session changed your mind about something:** use `revise()`, never a
+delete tool. Record the new belief first, then revise the old one pointing at
+it. An archive that forgets what you used to think cannot answer why you
+changed your mind — which is the main reason to keep one.
 
 ## Step 3: Handoff + MEMORY.md
 

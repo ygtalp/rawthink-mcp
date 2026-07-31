@@ -38,6 +38,12 @@ def _today() -> str:
 # Observation helpers
 # ---------------------------------------------------------------------------
 
+# Observation kinds. A decision's parts stay queryable instead of being buried
+# in prose: "we chose X" is readable from the code forever, "we did not choose
+# Y, because Z" exists nowhere else.
+OBSERVATION_KINDS = {"note", "decided", "rejected", "because", "touches"}
+
+
 def _normalize_observation(obs) -> dict:
     """Normalize a legacy string observation into the temporal dict format."""
     if isinstance(obs, str):
@@ -45,11 +51,119 @@ def _normalize_observation(obs) -> dict:
     return obs
 
 
+def validate_observation_kind(value: str | None) -> str:
+    if value is None or value == "":
+        return "note"
+    v = str(value).strip().lower()
+    if v not in OBSERVATION_KINDS:
+        raise SchemaError(
+            f"Unknown observation kind '{value}'. Valid: {_fmt(OBSERVATION_KINDS)}"
+        )
+    return v
+
+
 def _obs_text(obs) -> str:
     """Extract text from an observation (dict or legacy string)."""
     if isinstance(obs, dict):
         return obs.get("text", "")
     return str(obs)
+
+
+# ---------------------------------------------------------------------------
+# Schema validation
+#
+# These are the single point of enforcement. Both writers — the session-close
+# command and the phase pipeline — go through them, so a vocabulary that holds
+# here holds everywhere. A warning that callers can ignore is not enforcement:
+# this vault reached 46 entity types and 66 relation types under a scheme that
+# only warned.
+# ---------------------------------------------------------------------------
+
+class SchemaError(ValueError):
+    """A write was rejected because it does not match the controlled schema."""
+
+
+def _fmt(values) -> str:
+    return ", ".join(sorted(values))
+
+
+def validate_entity_type(value: str | None) -> str:
+    """Entity type must come from the closed list. No default guessing."""
+    if not value:
+        raise SchemaError(
+            f"entityType is required. Valid types: {_fmt(config.ENTITY_TYPES)}"
+        )
+    v = value.strip().lower()
+    if v not in config.ENTITY_TYPES:
+        raise SchemaError(
+            f"Unknown entityType '{value}'. Valid types: {_fmt(config.ENTITY_TYPES)}. "
+            f"If this is about a subject area rather than a role, it belongs in "
+            f"`domain`, not `entityType`."
+        )
+    return v
+
+
+def validate_domain(value: str | None) -> str:
+    """Domain must come from the known list; extend config.DOMAINS to add one."""
+    if not value:
+        raise SchemaError(
+            f"domain is required. Known domains: {_fmt(config.DOMAINS)}"
+        )
+    v = value.strip().lower()
+    if v not in config.DOMAINS:
+        raise SchemaError(
+            f"Unknown domain '{value}'. Known domains: {_fmt(config.DOMAINS)}. "
+            f"Add it to config.DOMAINS if this is a subject area you work in."
+        )
+    return v
+
+
+def validate_epistemic(value: str | None) -> str:
+    """Epistemic status. Absent means 'unknown', which is not the same as
+    'assertion' — never silently upgrade an unstated claim."""
+    if value is None or value == "":
+        return config.DEFAULT_EPISTEMIC
+    v = str(value).strip().lower()
+    if v not in config.EPISTEMIC_VALUES:
+        raise SchemaError(
+            f"Unknown epistemic '{value}'. Valid: {_fmt(config.EPISTEMIC_VALUES)}"
+        )
+    return v
+
+
+def validate_visibility(value: str | None) -> str:
+    """Defaults to private. Sharing is opt-in, per entity."""
+    if value is None or value == "":
+        return config.DEFAULT_VISIBILITY
+    v = str(value).strip().lower()
+    if v not in config.VISIBILITY_VALUES:
+        raise SchemaError(
+            f"Unknown visibility '{value}'. Valid: {_fmt(config.VISIBILITY_VALUES)}"
+        )
+    return v
+
+
+def normalize_relation_type(value: str | None) -> str:
+    """Fold known synonyms into the canonical form; reject anything else.
+
+    Returns the canonical type. Raises on an unrecognised type rather than
+    accepting it with a warning — the warning is what let 56 one-off relation
+    types into a 165-relation graph.
+    """
+    if not value:
+        raise SchemaError(
+            f"relationType is required. Canonical types: {_fmt(config.RELATION_TYPES)}"
+        )
+    v = value.strip().lower().replace(" ", "_").replace("-", "_")
+    v = config.RELATION_ALIASES.get(v, v)
+    if v not in config.RELATION_TYPES:
+        raise SchemaError(
+            f"Unknown relationType '{value}'. Canonical types: "
+            f"{_fmt(config.RELATION_TYPES)}. If the connection needs a more "
+            f"specific description, put it in an observation and use the "
+            f"closest canonical type here."
+        )
+    return v
 
 
 # ---------------------------------------------------------------------------
@@ -159,8 +273,17 @@ class KnowledgeGraph:
 
     # --- public API ---
 
-    def search_nodes(self, query: str) -> dict:
-        """Search entities by name, type, and observations with Turkish normalization."""
+    def search_nodes(self, query: str, limit: int = 10,
+                     max_relations: int = 50,
+                     domain: str | None = None,
+                     entity_type: str | None = None) -> dict:
+        """Search entities by name, type and observations, bounded.
+
+        Unbounded search was the real context hazard here: a broad query on a
+        large graph returned every match plus every relation touching them.
+        `limit` caps what comes back; `total_matched` still reports how many
+        there were, so a truncated result is visible rather than silent.
+        """
         all_items = self._read_all()
         nq = normalize_turkish(query)
         tokens = nq.split()
@@ -205,17 +328,50 @@ class KnowledgeGraph:
             reverse=True,
         )
 
+        # Optional structural filters — the point of splitting entityType from
+        # domain is being able to narrow on either one.
+        if entity_type:
+            et = validate_entity_type(entity_type)
+            entities = [e for e in entities if e.get("entityType") == et]
+        if domain:
+            dm = validate_domain(domain)
+            entities = [e for e in entities if e.get("domain") == dm]
+
+        total_matched = len(entities)
+        page = entities[:max(0, limit)]
+        page_names = {e["name"] for e in page}
+
         relations = [
             r for r in self._relations(all_items)
-            if r.get("from") in candidate_names or r.get("to") in candidate_names
+            if r.get("from") in page_names or r.get("to") in page_names
         ]
-        return {"entities": entities, "relations": relations}
+        total_relations = len(relations)
+        relations = relations[:max(0, max_relations)]
+
+        return {
+            "entities": page,
+            "relations": relations,
+            "total_matched": total_matched,
+            "total_relations": total_relations,
+            "truncated": total_matched > len(page) or total_relations > len(relations),
+        }
 
     def create_entities(self, entities: list[dict]) -> list[dict]:
         """Create entities, merging observations if name already exists."""
         all_items = self._read_all()
         existing = {e["name"]: e for e in self._entities(all_items)}
         today = _today()
+
+        # Validate every entity before writing any of them. A partial write on
+        # a rejected batch leaves the graph in a state nobody asked for.
+        for ent in entities:
+            if not ent.get("name"):
+                raise SchemaError("entity name is required")
+            if ent["name"] not in existing:
+                validate_entity_type(ent.get("entityType"))
+                validate_domain(ent.get("domain"))
+            validate_epistemic(ent.get("epistemic"))
+            validate_visibility(ent.get("visibility"))
 
         created = []
         for ent in entities:
@@ -235,9 +391,18 @@ class KnowledgeGraph:
                             "status": "active",
                         })
                 existing[name]["observations"] = old_obs + new_obs
-                # Update epistemic if provided
+                # Merging into an entity that already exists: validate whatever
+                # the caller supplied, but do not demand the new required
+                # fields. The entity predates them; filling those in is the
+                # migration's job, not this write's.
+                if ent.get("entityType"):
+                    existing[name]["entityType"] = validate_entity_type(ent["entityType"])
+                if ent.get("domain"):
+                    existing[name]["domain"] = validate_domain(ent["domain"])
                 if "epistemic" in ent:
-                    existing[name]["epistemic"] = ent["epistemic"]
+                    existing[name]["epistemic"] = validate_epistemic(ent["epistemic"])
+                if "visibility" in ent:
+                    existing[name]["visibility"] = validate_visibility(ent["visibility"])
                 # Touch activation
                 existing[name]["activation"] = 1.0
                 existing[name]["last_accessed"] = today
@@ -260,13 +425,14 @@ class KnowledgeGraph:
                 new_entity = {
                     "type": "entity",
                     "name": name,
-                    "entityType": ent.get("entityType", "concept"),
+                    "entityType": validate_entity_type(ent.get("entityType")),
+                    "domain": validate_domain(ent.get("domain")),
+                    "epistemic": validate_epistemic(ent.get("epistemic")),
+                    "visibility": validate_visibility(ent.get("visibility")),
                     "observations": temporal_obs,
                     "activation": 1.0,
                     "last_accessed": today,
                 }
-                if "epistemic" in ent:
-                    new_entity["epistemic"] = ent["epistemic"]
                 all_items.append(new_entity)
                 existing[name] = new_entity
                 created.append(new_entity)
@@ -282,32 +448,29 @@ class KnowledgeGraph:
             for r in self._relations(all_items)
         }
 
-        created = []
+        # Normalize and validate the whole batch first. Unknown types are
+        # REJECTED, not accepted with a warning: the warning is what allowed 56
+        # one-off relation types into a 165-relation graph.
+        prepared = []
         for rel in relations:
-            rel_type = rel["relationType"]
-            key = (rel["from"], rel["to"], rel_type)
+            if not rel.get("from") or not rel.get("to"):
+                raise SchemaError("relation requires both 'from' and 'to'")
+            prepared.append((rel["from"], rel["to"],
+                             normalize_relation_type(rel.get("relationType"))))
 
-            # Controlled vocabulary check
-            warning = None
-            if rel_type not in config.RELATION_TYPES:
-                warning = (
-                    f"Non-standard relationType '{rel_type}'. "
-                    f"Canonical types: {', '.join(sorted(config.RELATION_TYPES))}"
-                )
-
+        created = []
+        for src, dst, rel_type in prepared:
+            key = (src, dst, rel_type)
             if key not in existing_rels:
                 new_rel = {
                     "type": "relation",
-                    "from": rel["from"],
-                    "to": rel["to"],
+                    "from": src,
+                    "to": dst,
                     "relationType": rel_type,
                 }
                 all_items.append(new_rel)
                 existing_rels.add(key)
-                result = dict(new_rel)
-                if warning:
-                    result["warning"] = warning
-                created.append(result)
+                created.append(dict(new_rel))
 
         self._write_all(all_items)
         return created
@@ -427,6 +590,195 @@ class KnowledgeGraph:
         removed_count = len(all_items) - len(remaining)
         self._write_all(remaining)
         return [{"removed": removed_count}]
+
+    # -----------------------------------------------------------------
+    # Single write path
+    #
+    # Both writers go through record(): the session-close command extracting
+    # from a transcript, and the phase pipeline closing a phase. Same
+    # validation, same shape, one place to change. Different callers, one
+    # operation.
+    # -----------------------------------------------------------------
+
+    def record(self, entities: list[dict] | None = None,
+               relations: list[dict] | None = None,
+               observations: list[dict] | None = None) -> dict:
+        """Validated, all-or-nothing write of entities, relations and observations.
+
+        Everything is validated before anything is written. A batch that is
+        half-valid writes nothing — a graph left in a state nobody asked for is
+        worse than a rejected write.
+        """
+        entities = entities or []
+        relations = relations or []
+        observations = observations or []
+
+        all_items = self._read_all()
+        existing = {e["name"]: e for e in self._entities(all_items)}
+        today = _today()
+
+        # ---- validate everything first ----
+        for ent in entities:
+            if not ent.get("name"):
+                raise SchemaError("entity name is required")
+            if ent["name"] not in existing:
+                validate_entity_type(ent.get("entityType"))
+                validate_domain(ent.get("domain"))
+            validate_epistemic(ent.get("epistemic"))
+            validate_visibility(ent.get("visibility"))
+            for o in ent.get("observations", []):
+                if isinstance(o, dict):
+                    validate_observation_kind(o.get("kind"))
+
+        prepared_rels = []
+        for rel in relations:
+            if not rel.get("from") or not rel.get("to"):
+                raise SchemaError("relation requires both 'from' and 'to'")
+            prepared_rels.append((rel["from"], rel["to"],
+                                  normalize_relation_type(rel.get("relationType"))))
+
+        for obs in observations:
+            if not obs.get("entityName"):
+                raise SchemaError("observation requires 'entityName'")
+            validate_observation_kind(obs.get("kind"))
+
+        # A relation must not point at a name that neither exists nor is being
+        # created in this same call. Dangling edges are how a graph stops being
+        # traversable without anyone noticing.
+        will_exist = set(existing) | {e["name"] for e in entities}
+        dangling = {n for src, dst, _ in prepared_rels for n in (src, dst)
+                    if n not in will_exist}
+        if dangling:
+            raise SchemaError(
+                f"relation points at unknown entities: {_fmt(dangling)}. "
+                f"Create them in the same record() call, or fix the name."
+            )
+
+        # ---- write ----
+        created_entities, created_relations, added_observations = [], [], []
+
+        for ent in entities:
+            name = ent["name"]
+            new_obs = []
+            for o in ent.get("observations", []):
+                text = _obs_text(o)
+                kind = validate_observation_kind(o.get("kind") if isinstance(o, dict) else None)
+                new_obs.append({"text": text, "kind": kind,
+                                "created": today, "status": "active"})
+            if name in existing:
+                old = existing[name].get("observations", [])
+                old_texts = {_obs_text(o) for o in old}
+                existing[name]["observations"] = old + [
+                    o for o in new_obs if o["text"] not in old_texts
+                ]
+                if ent.get("entityType"):
+                    existing[name]["entityType"] = validate_entity_type(ent["entityType"])
+                if ent.get("domain"):
+                    existing[name]["domain"] = validate_domain(ent["domain"])
+                if "epistemic" in ent:
+                    existing[name]["epistemic"] = validate_epistemic(ent["epistemic"])
+                if "visibility" in ent:
+                    existing[name]["visibility"] = validate_visibility(ent["visibility"])
+                existing[name]["activation"] = 1.0
+                existing[name]["last_accessed"] = today
+                for item in all_items:
+                    if item.get("type") == "entity" and item.get("name") == name:
+                        item.update(existing[name])
+                        break
+                created_entities.append(existing[name])
+            else:
+                new_entity = {
+                    "type": "entity",
+                    "name": name,
+                    "entityType": validate_entity_type(ent.get("entityType")),
+                    "domain": validate_domain(ent.get("domain")),
+                    "epistemic": validate_epistemic(ent.get("epistemic")),
+                    "visibility": validate_visibility(ent.get("visibility")),
+                    "observations": new_obs,
+                    "activation": 1.0,
+                    "last_accessed": today,
+                }
+                all_items.append(new_entity)
+                existing[name] = new_entity
+                created_entities.append(new_entity)
+
+        existing_rels = {(r["from"], r["to"], r["relationType"])
+                         for r in self._relations(all_items)}
+        for src, dst, rel_type in prepared_rels:
+            key = (src, dst, rel_type)
+            if key not in existing_rels:
+                new_rel = {"type": "relation", "from": src, "to": dst,
+                           "relationType": rel_type}
+                all_items.append(new_rel)
+                existing_rels.add(key)
+                created_relations.append(new_rel)
+
+        for obs in observations:
+            name = obs["entityName"]
+            kind = validate_observation_kind(obs.get("kind"))
+            target = next((i for i in all_items
+                           if i.get("type") == "entity" and i.get("name") == name), None)
+            if target is None:
+                raise SchemaError(f"observation targets unknown entity '{name}'")
+            old_texts = {_obs_text(o) for o in target.get("observations", [])}
+            for text in obs.get("contents", []):
+                if text not in old_texts:
+                    target.setdefault("observations", []).append(
+                        {"text": text, "kind": kind, "created": today, "status": "active"})
+                    added_observations.append({"entityName": name, "text": text, "kind": kind})
+
+        self._write_all(all_items)
+        return {
+            "entities": created_entities,
+            "relations": created_relations,
+            "observations": added_observations,
+        }
+
+    def record_decision(self, name: str, domain: str, decided: str,
+                        because: str, rejected: list[str] | None = None,
+                        touches: list[str] | None = None,
+                        epistemic: str = "assertion",
+                        visibility: str | None = None,
+                        supersedes: str | None = None,
+                        relations: list[dict] | None = None) -> dict:
+        """Convenience builder over record() for the decision shape.
+
+        Not a second write path — it assembles arguments and calls record().
+        `rejected` is the field that earns this its own helper: what was chosen
+        is recoverable from the code, what was considered and dropped is not.
+        """
+        obs = [{"text": decided, "kind": "decided"},
+               {"text": because, "kind": "because"}]
+        obs += [{"text": r, "kind": "rejected"} for r in (rejected or [])]
+        obs += [{"text": t, "kind": "touches"} for t in (touches or [])]
+
+        rels = list(relations or [])
+        if supersedes:
+            rels.append({"from": name, "to": supersedes, "relationType": "supersedes"})
+
+        return self.record(
+            entities=[{"name": name, "entityType": "decision", "domain": domain,
+                       "epistemic": epistemic, "visibility": visibility,
+                       "observations": obs}],
+            relations=rels,
+        )
+
+    def revise(self, entity_name: str, observations: list[str],
+               superseded_by: str | None = None,
+               superseding_entity: str | None = None) -> dict:
+        """Mark observations invalidated, optionally linking what replaced them.
+
+        Deliberately not a delete. The value of a decision archive is that it
+        remembers what you used to believe and when you stopped; removing the
+        old belief destroys exactly the thing that makes the record worth
+        keeping.
+        """
+        result = self.invalidate_observations(entity_name, observations, superseded_by)
+        if superseding_entity and result.get("invalidated"):
+            self.record(relations=[{"from": superseding_entity, "to": entity_name,
+                                    "relationType": "supersedes"}])
+            result["supersedes_edge"] = f"{superseding_entity} -> {entity_name}"
+        return result
 
     def read_graph(self) -> dict:
         """Return all entities and relations."""
