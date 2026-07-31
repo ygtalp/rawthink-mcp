@@ -33,6 +33,17 @@ jobs:
           echo "tag=$tag server.json=$sj package=$sp pyproject=$pp"
           test "$tag" = "$sj" -a "$tag" = "$sp" -a "$tag" = "$pp"
 
+      - name: README carries the ownership marker
+        # The registry proves package ownership by finding `mcp-name: <name>`
+        # in the PyPI README. Without it publishing fails after the package is
+        # already released — and PyPI versions cannot be re-uploaded, so the
+        # fix costs a version bump. Check before, not after.
+        run: |
+          name=$(python -c "import json;print(json.load(open('server.json'))['name'])")
+          grep -q "mcp-name: $name" README.md || {
+            echo "README.md must contain: mcp-name: $name"; exit 1; }
+          echo "marker present: $name"
+
       - name: Wait for the version to appear on PyPI
         run: |
           v="${GITHUB_REF_NAME#v}"
