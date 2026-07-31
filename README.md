@@ -1,287 +1,358 @@
 # RAWThink
 
-**Your AI assistant forgets everything between sessions. RAWThink fixes that.**
+Persistent memory for AI thinking partnerships. A knowledge graph you can argue
+with, search that spans every session you have ever had, and a record of not
+just what you decided but what you rejected.
 
-> Persistent memory for Claude Code — hybrid search, knowledge graph, session lifecycle.
-> Think of it as a second brain that grows with every conversation.
+MCP server for Claude Code. Python, local, no cloud.
 
-## The Problem
+---
 
-Claude Code is stateless. Every session starts from zero. You explain the same context, re-establish the same decisions, re-discover the same insights. Yesterday's breakthrough is today's cold start.
+## The problem
 
-RAWThink gives your AI a memory that persists, decays naturally, and revises itself when you change your mind. It's a 15-tool MCP server that turns Claude Code into a long-term thinking partner.
+Every conversation with an AI starts from nothing. You explain the same context,
+re-derive the same conclusions, and rediscover decisions you already made — and
+the reasoning that produced them is gone the moment the window scrolls.
 
-## Article
+Chat history does not fix this. History is a transcript; what you need is
+*structure*: which ideas connect, which beliefs you have since abandoned, which
+alternatives you considered and dropped, and why.
 
-Read the full story: [Your AI Doesn't Remember You](https://dev.to/yigitaunal/your-ai-doesnt-remember-you-thats-about-to-matter-more-than-you-think-77k)
+RAWThink keeps that structure in three layers, in files you own.
 
-## Quick Start
+## What it does
+
+**Hybrid semantic search** across every session and note — BGE-M3 dense
+embeddings and BM25 sparse vectors, fused with RRF. Ask "what did I think about
+free will?" and get the passages, not a keyword match.
+
+**A temporal knowledge graph** where observations carry dates and status.
+Beliefs can be marked invalidated and linked to what replaced them, so the
+archive remembers not only what you think but what you used to think.
+
+**Session lifecycle** — a close command that exports the conversation, extracts
+entities into the graph, and writes a handoff the next session loads
+automatically.
+
+**Activation decay** — unused knowledge fades on a ~23-day half-life, accessed
+knowledge stays warm. Old material is still there; it just stops crowding out
+what you are working on now.
+
+---
+
+## Quick start
 
 ### Prerequisites
 
 - Python 3.10+
-- [Docker](https://docs.docker.com/get-docker/) (for Qdrant vector database)
-- [Ollama](https://ollama.ai/) (for local embeddings)
-- [Node.js](https://nodejs.org/) (for the SessionStart hook)
+- Docker for Qdrant — or set `QDRANT_PATH` for embedded mode
+- [Ollama](https://ollama.com) with `bge-m3`: `ollama pull bge-m3`
 
-### Install & set up
+### Install
 
 ```bash
 pip install rawthink-mcp
-rawthink-install              # creates project dir with vault, configs, and starter files
-cd ~/rawthink-vault           # go to your project directory
-docker compose up -d          # start Qdrant (docker-compose.yml is here)
-ollama pull bge-m3            # download embedding model
+rawthink-install                 # creates ~/rawthink-vault with everything inside
+cd ~/rawthink-vault
+docker compose up -d             # starts Qdrant
 ```
 
-Restart Claude Code. Done.
+`rawthink-install` writes the vault structure, `CLAUDE.md`,
+`THINKING_DIRECTIVES.md`, `SETUP.md`, `docker-compose.yml` and the `/rtclose`
+command. Use `rawthink-install --vault ~/my-vault` for a different location.
 
-`rawthink-install` creates a self-contained project directory at `~/rawthink-vault` with vault structure, CLAUDE.md, THINKING_DIRECTIVES.md, SETUP.md, docker-compose.yml, and /rtclose command. Run `rawthink-install --vault ~/my-vault` to customize the location.
-
-<details>
-<summary>Manual setup (without rawthink-install)</summary>
-
-Add to your `~/.claude.json`:
-
-```json
-{
-  "mcpServers": {
-    "rawthink": {
-      "command": "rawthink-mcp",
-      "env": {
-        "RAWTHINK_VAULT": "/path/to/your/vault"
-      }
-    }
-  }
-}
-```
-
-Create vault structure:
+### Register with Claude Code
 
 ```bash
-mkdir -p vault/{sessions,qnotes,archive/raw,outputs}
+claude mcp add --scope user rawthink -- rawthink-mcp
 ```
 
-Install from source instead of PyPI:
+### Upgrading from 0.x
+
+**1.5.0 changes the graph schema.** Migrate before writing anything:
 
 ```bash
-git clone https://github.com/ygtalp/rawthink-mcp.git
-cd rawthink-mcp
-pip install -e .
+python -m rawthink_mcp.migrate --path vault/memory.jsonl --guess-domains --heal-dangling
 ```
 
-</details>
+That is a dry run — it prints what would change and writes nothing. Read the
+report, then re-run with `--apply`. A timestamped backup is taken first.
 
-## Your First Session
+See [CHANGELOG.md](CHANGELOG.md) for what changed and why.
 
-Your vault starts empty — that's the point. Open Claude Code and start talking:
+---
 
-```
-You:   "We're building a REST API. Let's use PostgreSQL with connection pooling."
-Claude: [responds with technical discussion]
-
-You:   "/qnote we decided on PostgreSQL + pgBouncer for the API layer"
-       → saved to your vault as a searchable quick note
-
-You:   "/rtclose"
-       → Session exported, entities extracted, handoff written
-```
-
-Next session, Claude loads the handoff automatically and picks up where you left off. After a few sessions, your vault looks like this:
+## Your first session
 
 ```
-> search_thoughts("how did we handle the database?")
+> search_thoughts("what have I decided about caching?")
 
-1. [2025-03-15_002] API Architecture Decisions        score: 0.74
-   Decided on PostgreSQL + pgBouncer for connection pooling.
-   Key insight: pool_mode=transaction for serverless...
-
-2. [2025-03-22_001] Performance Review                 score: 0.61
-   Revisited DB strategy — added read replicas for
-   reporting queries, write primary stays single-node...
-
-> read_graph(summary=True)
-
-Knowledge Graph: 42 entities, 38 relations
-
-  decision (5)
-  - postgres-connection-pooling (3 obs) act=0.97
-  - api-versioning-strategy    (4 obs) act=0.85
-  - auth-jwt-vs-session        (2 obs) act=0.72
-  concept (8)
-  - cqrs-pattern               (3 obs) act=0.91
-  - event-sourcing             (5 obs) act=0.88
-  ...
+> record_decision(
+    name="api/cache: read-through",
+    domain="software",
+    decided="read-through cache in front of the read model",
+    because="the write path is already the bottleneck; adding invalidation there costs more",
+    rejected=["write-through — couples the write path to cache health",
+              "no cache — p99 was 400ms against a 200ms SLO"]
+  )
 ```
 
-## What It Does
+Close with `/rtclose`. It exports the conversation, extracts what is worth
+keeping into the graph, and leaves a handoff for next time — which the next
+session loads on its own.
 
-### Three-layer memory
+---
 
-1. **Hot cache** (MEMORY.md) — loaded every session, essential context
-2. **Knowledge graph** (JSONL) — entities, relations, temporal observations with belief revision
-3. **Semantic search** (Qdrant) — hybrid dense + BM25 across all sessions and qnotes
+## The schema, and why it looks like this
 
-### Session lifecycle
+This is the part worth understanding, because it is what keeps the graph
+queryable over years rather than months.
+
+### Role and subject are separate fields
+
+`entityType` answers **what role does this node play**. Closed list of ten:
+
+| type | for |
+|---|---|
+| `decision` | a choice made, with alternatives rejected |
+| `concept` | an idea, theory, model, analogy |
+| `finding` | something discovered or measured — a bug, a result, an audit |
+| `rule` | a durable constraint or pattern to follow |
+| `open-question` | unresolved, waiting on evidence |
+| `artifact` | a project, tool, document, feature, source |
+| `insight` | a realisation that changed how something is seen |
+| `task` | a unit of intended work |
+| `event` | something that happened at a point in time |
+| `thing` | a person, object or substance named directly |
+
+`domain` answers **what subject is it about**: `software`, `music`, `history`,
+`philosophy`, `health`, `writing`, `neuro`, `finance`, `personal`, `galaxy`.
+
+Keeping these apart is not tidiness. When one field carries both, the type list
+grows by one entry per subject — a real vault reached 46 types this way, with
+`saglik-bulgusu`, `teknik-karar` and `bug-pattern` sitting next to `karar`. At
+that point nothing can be filtered, because no two entries agree on what a type
+means.
+
+### Unknown relation types are rejected, not warned about
+
+Canonical vocabulary: `supports`, `contradicts`, `evolved_into`, `depends_on`,
+`exemplifies`, `part_of`, `caused_by`, `enables`, `supersedes`, `related_to`,
+`investigates`, `informs`, `uses`.
+
+Close synonyms fold automatically — `connected_to` → `related_to`, `aspect_of` →
+`part_of`. Anything else raises.
+
+An earlier version accepted unknown types with a warning. Nothing acted on the
+warning and 56 one-off types accumulated. **A warning that lets the write
+through is a decision to allow it, written in the voice of disapproval.**
+
+### Epistemic status defaults to unknown
+
+`assertion`, `hypothesis`, `speculation` — or `unknown` when unstated.
+
+`unknown` is deliberate. If a session did not establish something, recording it
+as an assertion promotes a claim nobody made. The migration follows the same
+rule: 144 entities with no epistemic field became `unknown`, not `assertion`.
+
+### Revise, do not delete
 
 ```
-Session start (handoff loads) → Think together → /rtclose →
-JSONL export + entity extraction + handoff for next session
+> revise(entity_name="api/cache: read-through",
+         observations=["read-through cache in front of the read model"],
+         superseded_by="moved to write-through after the read model split",
+         superseding_entity="api/cache: write-through")
 ```
 
-### Key capabilities
+The old observation is marked invalidated, dated, and linked to what replaced
+it. Delete tools exist but sit outside the default agent-facing profiles: an
+archive that forgets its own reversals cannot answer the question it was kept
+for.
 
-- **Hybrid search**: BGE-M3 dense embeddings + BM25 sparse vectors, fused with RRF
-- **Belief revision**: observations can be invalidated, superseded, and tracked over time
-- **Activation decay**: unused knowledge fades (~23-day half-life), accessed knowledge stays hot
-- **Epistemic typing**: mark entities as `assertion`, `hypothesis`, or `speculation`
-- **Multi-terminal safe**: parallel sessions don't overwrite each other's handoffs
-- **Thinking directives**: structured discipline for human-AI thinking partnerships
-- **Ollama fallback**: embedding cache for when Ollama is temporarily unavailable
+### Decisions record what was rejected
+
+`record_decision` stores `decided`, `because`, and `rejected` as separately
+queryable observations. The rejected alternatives are the part worth keeping —
+what was chosen stays readable in the code forever, what was considered and
+dropped exists nowhere else. That is the question that gets asked six months
+later.
+
+---
+
+## MCP tools
+
+Tool definitions sit in the context window from the first token of a session,
+so the surface is a standing cost rather than a per-call one. Profiles load
+only what a given step needs.
+
+```bash
+RAWTHINK_TOOL_PROFILE=recall   #  4 tools,  ~900 tokens — read-only
+RAWTHINK_TOOL_PROFILE=record   #  5 tools, ~1750 tokens — the write path
+RAWTHINK_TOOL_PROFILE=full     # 17 tools, ~4200 tokens — everything (default)
+```
+
+A tool outside the active profile stays an ordinary function — reachable from
+the CLI and from tests. It simply is not in front of an agent that will not
+call it.
+
+### Search
+
+| tool | what it does |
+|---|---|
+| `search_thoughts` | Hybrid search. `mode="overview"` gives one line per session |
+| `get_session` | Full content of a session by ID |
+| `store_thought` | Save a quick note as a qnote |
+| `reindex` | Re-index the vault into Qdrant |
+
+### Graph — reading
+
+| tool | what it does |
+|---|---|
+| `search_nodes` | Bounded. Filters by `domain` and `entity_type`; reports `total_matched` and `truncated` |
+| `open_nodes` | Specific entities with their relations |
+| `read_graph` | Whole graph, paginated, with a summary mode |
+
+### Graph — writing
+
+| tool | what it does |
+|---|---|
+| `record` | Entities, relations and observations in one validated, atomic call |
+| `record_decision` | A decision with its rejected alternatives |
+| `revise` | Mark observations superseded, link what replaced them |
+| `create_entities` · `create_relations` · `add_observations` | Lower-level equivalents |
+| `invalidate_observations` | Belief revision without the relation link |
+| `delete_entities` · `delete_observations` · `delete_relations` | `full` profile only |
+
+`record()` validates the whole batch before writing any of it. A half-valid
+batch writes nothing — a graph left in a state nobody asked for is worse than a
+rejected write. Relations may only point at entities that already exist or are
+created in the same call.
+
+Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`,
+`idempotentHint`), so a host can tell deletion apart from search.
+
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│                  Claude Code                    │
-│              (MCP Client)                       │
-└──────────────────┬──────────────────────────────┘
-                   │ MCP (stdio)
-┌──────────────────▼──────────────────────────────┐
-│                rawthink                         │
-│           (FastMCP Server)                      │
-│                                                 │
-│  ┌─────────────┐  ┌──────────┐  ┌────────────┐  │
-│  │   Indexer   │  │  Graph   │  │  Chunker   │  │
-│  │ (Qdrant +   │  │ (JSONL   │  │ (Markdown  │  │
-│  │  Ollama)    │  │  KG)     │  │  splitter) │  │
-│  └──────┬──────┘  └────┬─────┘  └────────────┘  │
-│         │              │                        │
-│  ┌──────▼──────┐  ┌────▼─────┐                  │
-│  │   Qdrant    │  │ memory   │                  │
-│  │  (Docker)   │  │ .jsonl   │                  │
-│  └─────────────┘  └──────────┘                  │
-└─────────────────────────────────────────────────┘
-                   │
-        ┌──────────▼──────────┐
-        │       Vault         │
-        │  sessions/ qnotes/  │
-        │  archive/  outputs/ │
-        └─────────────────────┘
+Claude Code
+    │  MCP (stdio)
+    ▼
+rawthink-mcp
+    ├── search  ──►  Qdrant        dense (BGE-M3) + sparse (BM25), RRF fusion
+    ├── graph   ──►  memory.jsonl  entities, relations, temporal observations
+    └── export  ──►  vault/        sessions, qnotes, handoffs as markdown
+                         │
+                    Ollama (bge-m3)
 ```
 
-## MCP Tools
+Everything runs locally. The vault is plain markdown with YAML frontmatter —
+open it in Obsidian to browse visually, no plugins needed.
 
-### Search (5 tools)
+### Why JSONL for the graph
 
-| Tool              | Description                                   |
-| ----------------- | --------------------------------------------- |
-| `search_thoughts` | Hybrid semantic + keyword search across vault |
-| `get_session`     | Retrieve full session content by ID           |
-| `get_related`     | Quick related thoughts lookup (session-level) |
-| `store_thought`   | Store a new thought as a qnote                |
-| `reindex`         | Re-index vault content into Qdrant            |
+Human-readable, git-diffable, no dependency. You can open it, read it, and see
+a meaningful diff when it changes — which matters for something meant to hold
+your reasoning.
 
-### Knowledge Graph (10 tools)
+The tradeoff is load time: the whole file is parsed per read. Fine at a few
+hundred entities, slower as it grows. Past tens of thousands, SQLite is the
+obvious next step.
 
-| Tool                      | Description                                        |
-| ------------------------- | -------------------------------------------------- |
-| `search_nodes`            | Search entities by name, type, and observations    |
-| `create_entities`         | Create/merge entities with epistemic typing        |
-| `create_relations`        | Create relations (controlled vocabulary)           |
-| `add_observations`        | Add temporal observations to entities              |
-| `invalidate_observations` | Mark observations as invalidated (belief revision) |
-| `delete_entities`         | Delete entities and their relations                |
-| `delete_observations`     | Remove specific observations                       |
-| `delete_relations`        | Remove specific relations                          |
-| `read_graph`              | Read full graph with pagination + summary mode     |
-| `open_nodes`              | Open specific entities with their relations        |
+---
 
-## How It's Different
+## Session lifecycle
 
-RAWThink is not a codebase analyzer or a simple key-value memory. It's a living knowledge system designed for thinking partnerships.
+```
+session start          handoff loads automatically (SessionStart hook)
+      ↓
+  think together
+      ↓
+   /rtclose            export → extract entities → write handoff → update MEMORY.md
+```
 
-|                    | RAWThink                         | Basic MCP Memory | Codebase Analyzers           |
-| ------------------ | -------------------------------- | ---------------- | ---------------------------- |
-| Search             | Hybrid (dense + BM25 + RRF)      | Key lookup       | Graph query                  |
-| Knowledge          | Temporal KG with belief revision | Flat key-value   | Static AST graph             |
-| Memory decay       | Activation decay (~23 days)      | None             | None                         |
-| Session lifecycle  | Full (export, extract, handoff)  | None             | None                         |
-| Epistemic tracking | assertion/hypothesis/speculation | None             | extracted/inferred/ambiguous |
-| Designed for       | Thinking & decision memory       | Simple facts     | Code structure               |
+`/rtclose` exports the conversation to clean markdown, extracts entities and
+relations through `record()`, writes a project-scoped handoff, and updates
+`MEMORY.md`.
 
-## Why JSONL?
+The lifecycle commands currently require Claude Code. The search and graph
+tools work with any MCP client.
 
-Human-readable, git-diffable, zero dependency. At 120 entities the graph loads in <50ms. At 10K entities ~1.4s. The optimization path is clear: mtime cache for repeated reads, lazy writes for activation updates, SQLite migration at 50K+ entities.
+---
 
 ## Configuration
 
-All settings via environment variables or `rawthink_mcp/config.py`:
+| Setting | Env var | Default |
+|---|---|---|
+| Vault path | `RAWTHINK_VAULT` | `../vault` |
+| Knowledge graph file | `MEMORY_FILE_PATH` | `<vault>/memory.jsonl` |
+| Qdrant URL | `QDRANT_URL` | `http://localhost:6333` |
+| Qdrant embedded path | `QDRANT_PATH` | — (set it to skip Docker) |
+| Ollama URL | `OLLAMA_URL` | `http://localhost:11434` |
+| Embedding model | `OLLAMA_MODEL` | `bge-m3` |
+| Tool profile | `RAWTHINK_TOOL_PROFILE` | `full` |
+| Turkish normalization | `RAWTHINK_TURKISH_NORMALIZATION` | `false` |
+| Evaluation set | `RAWTHINK_EVAL_GT` | `tests/ground_truth.example.json` |
 
-| Setting               | Env Var                          | Default                  | Description                          |
-| --------------------- | -------------------------------- | ------------------------ | ------------------------------------ |
-| Vault path            | `RAWTHINK_VAULT`                 | `../vault`               | Path to vault directory              |
-| Qdrant URL            | `QDRANT_URL`                     | `http://localhost:6333`  | Qdrant server URL                    |
-| Qdrant path           | `QDRANT_PATH`                    | —                        | Set for embedded Qdrant (no Docker)  |
-| Ollama URL            | `OLLAMA_URL`                     | `http://localhost:11434` | Ollama server URL                    |
-| Embedding model       | `OLLAMA_MODEL`                   | `bge-m3`                 | Ollama embedding model               |
-| KG file               | `MEMORY_FILE_PATH`               | `../vault/memory.jsonl`  | Knowledge graph file path            |
-| Turkish normalization | `RAWTHINK_TURKISH_NORMALIZATION` | `false`                  | Set `1` or `true` to enable          |
-| Decay rate            | —                                | `0.03`                   | Activation decay (~23-day half-life) |
+Vocabularies — `ENTITY_TYPES`, `DOMAINS`, `RELATION_TYPES`, `RELATION_ALIASES` —
+live in `rawthink_mcp/config.py`. Adding a domain is a one-line change.
 
-## Session Lifecycle
-
-RAWThink includes a session close command (`/rtclose`) that:
-
-1. **Exports** the current conversation to clean markdown + full transcript + HTML
-2. **Extracts** key entities and relations into the knowledge graph
-3. **Writes** a project-specific handoff file for the next session
-4. **Updates** MEMORY.md with essential context
-
-A SessionStart hook (`rawthink-handoff.js`) runs when Claude Code starts and loads the most recent handoff + recent qnotes into context automatically.
-
-> Session lifecycle currently requires Claude Code. MCP-native session tools are planned for v0.2.
+---
 
 ## Customization
 
-### CLAUDE.md
+**`CLAUDE.md`** — the thinking companion's role, tone and modes.
 
-Edit `CLAUDE.md` to customize the thinking companion's behavior:
+**`THINKING_DIRECTIVES.md`** — discipline for the partnership. Every rule was
+written after failing at it. Add your own; the only bad version of that file is
+one followed without understanding why each rule exists.
 
-- Role and tone
-- Active modes (free-flow, socratic, debate, synthesis, deep-dive, technical, galaxy-brain)
-- Epistemic transparency format
-- Meta-commands
+Both are copied into your vault by `rawthink-install`. If you edit the repo
+copies, run `python scripts/check_templates.py` — the installer embeds them, and
+two copies of one document drift silently.
 
-### THINKING_DIRECTIVES.md
+---
 
-Structured discipline for the thinking partnership. Every rule was born from a violation — don't follow mechanically, understand why each exists. Customize to match your workflow.
+## Known limitations
 
-### Obsidian (optional)
+Stated plainly, because a README that lists only strengths is not much use.
 
-Open your vault directory in Obsidian to browse sessions and qnotes visually. The vault uses standard markdown with YAML frontmatter — no plugins needed.
+**Concurrent writes can lose updates.** Graph mutations take no file lock. One
+session at a time against a vault is safe; two are not. An earlier version of
+this document claimed multi-terminal safety — the code did not support that
+claim, and it has been removed rather than quietly left in.
 
-### Entity Types
+**Ollama being unavailable degrades to sparse-only.** The embedding cache helps
+repeated queries; it is not a fallback. Retrieval quality drops noticeably.
 
-Default entity type is `"concept"`. Common types: `concept`, `decision`, `rule`, `insight`, `question`, `project`.
+**BM25 term IDs are corpus-dependent.** Sparse vectors go stale after a reindex,
+and RRF hides it because the dense side still works. Fixing it needs a full
+re-encode — that is what 2.0.0 is for.
 
-### Relation Types
+**Load time grows with the graph.** The whole JSONL is parsed on every read.
 
-Canonical types (non-standard accepted with warning):
-`supports`, `contradicts`, `evolved_into`, `depends_on`, `exemplifies`, `part_of`, `caused_by`, `enables`, `supersedes`, `related_to`
+---
 
 ## Roadmap
 
-- Interactive knowledge graph visualization
-- Wiki export (agent-browsable markdown per entity)
-- `.rawthinkignore` for vault indexing control
-- Graph traversal queries (unexpected connections, multi-hop)
-- SQLite backend for 50K+ entities
-- MCP-native session tools (no Claude Code dependency)
-- Configurable language normalization
+**2.0.0** — BM25 term-ID stability (breaking; requires a full reindex),
+per-vault BM25 state, atomic graph writes with a file lock, `rawthink-doctor`
+for install diagnostics, a unit test suite and CI.
 
+**Later** — graph visualisation, MCP-native session lifecycle so the close
+command is not Claude Code specific, support for more MCP clients.
 
+---
+
+## Contributing
+
+Issues and pull requests welcome.
+
+If you change the schema, change `config.py`, the migration in `migrate.py`, and
+the session-close instructions together. They are three views of one contract,
+and they drift apart quietly when they are not edited as a set.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT
